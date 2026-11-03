@@ -128,7 +128,7 @@ execute_code / wait_code (code mode; a cell per program, a store per chat)
                                         once; a sleep is a deadline in the run, no thread
         FutureSnapshot                  no call or sleep finished: keep the worker and wait on
                                         an event (a call ends, a thread frees up, the cell's
-                                        cancellation, another program waits for a worker);
+                                        cancellation, a waiting program claims this worker);
                                         on the last, dump the snapshot (within
                                         MAX_SUSPENDED_BYTES), return the worker, and later
                                         load_snapshot on any worker
@@ -150,7 +150,7 @@ execute_code / wait_code (code mode; a cell per program, a store per chat)
                                         terminate=true stops the cell
   each observation                      taken under the cell lock, formatted after it:
                                         prompt.py:format_content (model text, cut once in the
-                                        middle to max_output_tokens / max_tokens, 10,000 by
+                                        middle to max_output_tokens, 10,000 by
                                         default) and CodeModeExecutionResult (each part cut to
                                         about 4 characters per budget token): a CellWindow
                                         (stdout, calls, commit at the program's end,
@@ -311,12 +311,15 @@ health calls are not retried.
     `CHECKOUT_TIMEOUT_SECONDS` gets `BUSY_MESSAGE`; a resumed program waits for
     a worker up to its lifetime. A program that waits (an `await` on
     unfinished tool calls or sleeps, or a synchronous `time.sleep`) keeps its
-    worker while no other program waits for one. When one does,
+    worker while no other program waits for one. Each program that waits for
+    a worker claims one such holder (`sandbox.py:_WorkerDemand`), and claims
+    again each time its checkout times out. The claimed holder's
     `tools/tool_implementations/code_mode/sandbox.py:execute_program`
     dumps the waiting program, returns the worker, and resumes on any worker
     when a call finishes. Dumps held by the process are bounded by
     `MAX_SUSPENDED_BYTES` (256 MB); a program whose dump does not fit keeps its
-    worker. The compute
+    worker, and skips later dumps while the free budget is below its last dump
+    size. The compute
     limit carries across these segments. While a worker computes, the cell's
     cancellation kills it at once, and a timer kills it at the end of its
     lifetime when that falls within the segment; the pool replaces it. Waits
