@@ -39,7 +39,8 @@ Use the `internal_search` tool to search connected applications for information.
 # batching note (CODE_MODE_SEARCH_USAGE), so it omits the query limit.
 CODE_MODE_INTERNAL_SEARCH_GUIDANCE = _INTERNAL_SEARCH_USES
 INTERNAL_SEARCH_GUIDANCE = (
-    _INTERNAL_SEARCH_USES + "Never provide more than 3 queries at once to `internal_search`.\n"
+    _INTERNAL_SEARCH_USES
+    + "Never provide more than 3 queries at once to `internal_search`.\n"
 )
 
 # The internal_search stub's note in code mode: each call runs its own retrieval
