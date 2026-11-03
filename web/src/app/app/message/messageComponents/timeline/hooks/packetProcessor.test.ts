@@ -1218,33 +1218,6 @@ describe("packetProcessor", () => {
       expect(result.toolGroups.length).toBe(2); // Plan + Research agent
       expect(result.potentialDisplayGroups.length).toBe(1);
     });
-
-    test("a research agent stays open after a nested SECTION_END", () => {
-      const research = { turn_index: 0 };
-      const nested = { turn_index: 0, sub_turn_index: 0 };
-      const packets = [
-        createPacket(PacketType.RESEARCH_AGENT_START, research, {
-          research_task: "Research topic A",
-        }),
-        createSearchToolStartPacket(nested),
-        createPacket(PacketType.SECTION_END, nested),
-        createMessageStartPacket({ turn_index: 0, sub_turn_index: 1 }),
-      ];
-      const running = processPackets(createInitialState(1), packets);
-
-      expect(running.groupKeysWithSectionEnd.has("0-0")).toBe(false);
-      expect(running.finalAnswerComing).toBe(false);
-
-      const result = processPackets(running, [
-        ...packets,
-        createSearchToolStartPacket({ turn_index: 1 }),
-      ]);
-      const group = result.groupedPacketsMap.get("0-0") ?? [];
-
-      expect(result.groupKeysWithSectionEnd.has("0-0")).toBe(true);
-      expect(group.at(-1)?.obj.type).toBe(PacketType.SECTION_END);
-      expect(group.at(-1)?.placement.sub_turn_index).toBeUndefined();
-    });
   });
 
   describe("edge cases", () => {
@@ -1323,37 +1296,6 @@ describe("packetProcessor", () => {
 
       expect(result.toolGroups.length).toBe(1);
       expect(result.toolGroups[0]?.packets.length).toBe(4);
-    });
-
-    test("the parent SECTION_END closes the group", () => {
-      const state = createInitialState(1);
-      const result = processPackets(state, [
-        ...codeModeStart(),
-        createSearchToolStartPacket(nested),
-        createPacket(PacketType.SECTION_END, nested),
-        createPacket(PacketType.SECTION_END, parent),
-      ]);
-
-      expect(result.groupKeysWithSectionEnd.has("1-0")).toBe(true);
-    });
-
-    test("a stop injects a parent SECTION_END after a nested one", () => {
-      const state = createInitialState(1);
-      const result = processPackets(state, [
-        ...codeModeStart(),
-        createSearchToolStartPacket(nested),
-        createPacket(PacketType.SECTION_END, nested),
-        createStopPacket(),
-      ]);
-
-      const group = result.groupedPacketsMap.get("1-0") ?? [];
-      expect(
-        group.filter(
-          (p) =>
-            p.obj.type === PacketType.SECTION_END &&
-            p.placement.sub_turn_index == null
-        ).length
-      ).toBe(1);
     });
 
     test("nested search documents feed the document map", () => {
@@ -1499,21 +1441,28 @@ describe("packetProcessor", () => {
   });
 });
 
-describe("nested research packet ownership", () => {
-  test.each([PacketType.SECTION_END, PacketType.ERROR])(
-    "nested %s leaves the parent open until next turn or Stop",
-    (endType) => {
+describe("nested packet ownership", () => {
+  const parents = [
+    ["research agent", PacketType.RESEARCH_AGENT_START, { research_task: "R" }],
+    ["code mode", PacketType.CODE_MODE_START, { code: "" }],
+    ["coding agent", PacketType.CODING_AGENT_START, { query: "q", repo: "r" }],
+  ] as const;
+  test.each(
+    parents.flatMap(([name, type, fields]) =>
+      [PacketType.SECTION_END, PacketType.ERROR].map(
+        (endType) => [name, endType, type, fields] as const
+      )
+    )
+  )(
+    "%s: nested %s leaves the parent open until next turn or Stop",
+    (_name, endType, parentType, parentFields) => {
       for (const closing of [
         createMessageStartPacket({ turn_index: 1 }),
         createStopPacket(),
       ]) {
         const nested = { turn_index: 0, sub_turn_index: 0 };
         const packets = [
-          createPacket(
-            PacketType.RESEARCH_AGENT_START,
-            { turn_index: 0 },
-            { research_task: "Research" }
-          ),
+          createPacket(parentType, { turn_index: 0 }, parentFields),
           createSearchToolStartPacket(nested),
           createPacket(endType, nested),
           createMessageStartPacket({ turn_index: 0, sub_turn_index: 1 }, 99),

@@ -78,11 +78,11 @@ export class ChatPage {
     return this.aiMessages.nth(index);
   }
 
-  /** Images a tool generated for an AI message, shown at the top of its answer. */
   answerText(text: string, index = 0): Locator {
     return this.aiMessage(index).getByText(text, { exact: true });
   }
 
+  /** Images a tool generated for an AI message, shown at the top of its answer. */
   generatedImages(index = 0): Locator {
     return this.aiMessage(index).getByRole("img", {
       name: "Chat attachment",
@@ -219,10 +219,14 @@ export class ChatPage {
     await expect(this.inputBar.sendButton).toBeDisabled();
   }
 
-  async expectCustomToolResult(name: string, json: string): Promise<void> {
+  async expandTimeline(): Promise<void> {
     await this.page
       .getByRole("button", { name: "Expand timeline", exact: true })
       .click();
+  }
+
+  async expectCustomToolResult(name: string, json: string): Promise<void> {
+    await this.expandTimeline();
     const status = this.scrollContainer.getByText(`${name} completed`, {
       exact: true,
     });

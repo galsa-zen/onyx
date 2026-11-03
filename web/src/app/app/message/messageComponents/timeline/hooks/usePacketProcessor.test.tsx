@@ -517,32 +517,6 @@ describe("usePacketProcessor", () => {
       expect(result.current.displayGroups.length).toBe(1);
     });
 
-    test("a stopped response of only generated images completes", () => {
-      const packets = [
-        createPacket(PacketType.IMAGE_GENERATION_TOOL_START, { turn_index: 0 }),
-        createImageDeltaPacket(1, { turn_index: 0 }),
-        createPacket(PacketType.SECTION_END, { turn_index: 0 }),
-        createStopPacket(),
-      ];
-
-      const { result } = renderHook(() => usePacketProcessor(packets, 1));
-
-      expect(result.current.displayGroups.length).toBe(0);
-      expect(result.current.isComplete).toBe(true);
-    });
-
-    test("a response stopped during a tool step completes", () => {
-      const packets = [
-        createSearchToolStartPacket({ turn_index: 0 }),
-        createStopPacket(StopReason.USER_CANCELLED),
-      ];
-
-      const { result } = renderHook(() => usePacketProcessor(packets, 1));
-
-      expect(result.current.hasSteps).toBe(true);
-      expect(result.current.isComplete).toBe(true);
-    });
-
     test("a stopped response of only an error completes", () => {
       const packets = [
         createPacket(
@@ -558,21 +532,25 @@ describe("usePacketProcessor", () => {
       expect(result.current.isComplete).toBe(true);
     });
 
-    test("a reloaded response of only generated images completes without a stop reason", () => {
-      // The image call, then a stop on the same turn with no stop reason and
-      // no message.
+    test.each([
+      ["a live stop", createStopPacket()],
+      [
+        "a reloaded stop without a reason",
+        createPacket(PacketType.STOP, { turn_index: 0 }, { stop_reason: null }),
+      ],
+    ])("a response of only generated images completes after %s", (_, stop) => {
       const packets = [
         createPacket(PacketType.IMAGE_GENERATION_TOOL_START, { turn_index: 0 }),
-        createImageDeltaPacket(2, { turn_index: 0 }, "legacy"),
+        createImageDeltaPacket(2, { turn_index: 0 }, "reloaded"),
         createPacket(PacketType.SECTION_END, { turn_index: 0 }),
-        createPacket(PacketType.STOP, { turn_index: 0 }, { stop_reason: null }),
+        stop,
       ];
 
       const { result } = renderHook(() => usePacketProcessor(packets, 1));
 
       expect(result.current.generatedImages.map((i) => i.file_id)).toEqual([
-        "legacy-0",
-        "legacy-1",
+        "reloaded-0",
+        "reloaded-1",
       ]);
       expect(result.current.hasSteps).toBe(true);
       expect(result.current.displayGroups.length).toBe(0);

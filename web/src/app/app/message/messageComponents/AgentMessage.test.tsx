@@ -129,16 +129,14 @@ function renderComplete(): boolean | undefined {
     ?.latestMessageRenderComplete;
 }
 
+afterEach(() => {
+  useChatSessionStore.setState({ currentSessionId: null, sessions: new Map() });
+  jest.useRealTimers();
+});
+
 describe("AgentMessage queue gate", () => {
   beforeEach(() => {
     seedSessionAwaitingAnswer();
-  });
-
-  afterEach(() => {
-    useChatSessionStore.setState({
-      currentSessionId: null,
-      sessions: new Map(),
-    });
   });
 
   test("releases the gate when the latest answer arrives complete", async () => {
@@ -233,10 +231,6 @@ test("parallel search tabs complete independently", async () => {
     });
   } finally {
     view.unmount();
-    useChatSessionStore.setState({
-      currentSessionId: null,
-      sessions: new Map(),
-    });
   }
 });
 
@@ -571,10 +565,6 @@ test("code mode reads as the tool calls it makes", async () => {
     );
   } finally {
     view.unmount();
-    useChatSessionStore.setState({
-      currentSessionId: null,
-      sessions: new Map(),
-    });
   }
 });
 
@@ -607,10 +597,6 @@ test("a program without tool calls shows only a working header", async () => {
     expect(view.container).not.toHaveTextContent(/36|sum\(range|step/i);
   } finally {
     view.unmount();
-    useChatSessionStore.setState({
-      currentSessionId: null,
-      sessions: new Map(),
-    });
   }
 });
 
@@ -665,10 +651,6 @@ test("generated images from earlier tool steps lead the answer once", async () =
     await waitFor(() => expect(renderComplete()).toBe(true));
   } finally {
     view.unmount();
-    useChatSessionStore.setState({
-      currentSessionId: null,
-      sessions: new Map(),
-    });
   }
 });
 
@@ -780,10 +762,6 @@ test.each([
       await waitFor(() => expect(renderComplete()).toBe(true));
     } finally {
       view.unmount();
-      useChatSessionStore.setState({
-        currentSessionId: null,
-        sessions: new Map(),
-      });
     }
   }
 );
@@ -860,9 +838,5 @@ test("generated images remain visible when another tool follows answer text", as
     expect(renderComplete()).toBe(false);
   } finally {
     view.unmount();
-    useChatSessionStore.setState({
-      currentSessionId: null,
-      sessions: new Map(),
-    });
   }
 });

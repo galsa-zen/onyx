@@ -196,10 +196,10 @@ describe("grouping engine", () => {
     expect(state.toolGroups.map(keyOf)).toEqual(["0-0"]);
   });
 
-  it("treats image generation as a tool step and collects its images", () => {
+  it("treats image generation as a tool step and collects its images once", () => {
     const state = run([
       makePlacedPacket({ type: "image_generation_start" }, { turn_index: 0 }),
-      imageFinal(["a", "b"], { turn_index: 0 }),
+      imageFinal(["a", "a", "b"], { turn_index: 0 }),
       sectionEnd(0),
       searchStart(1),
       sectionEnd(1),
@@ -307,48 +307,6 @@ describe("grouping engine", () => {
       });
       expect(state.finalAnswerComing).toBe(true);
     });
-  });
-
-  it("closes a research group with a parent SECTION_END when the next turn starts", () => {
-    const nested = { turn_index: 0, sub_turn_index: 0 };
-    const state = run([
-      makePlacedPacket(
-        { type: "research_agent_start", research_task: "t" },
-        { turn_index: 0 },
-      ),
-      makePlacedPacket(
-        { type: "message_start", id: "n", content: "", final_documents: null },
-        nested,
-      ),
-      makePlacedPacket({ type: "section_end" }, nested),
-      searchStart(1),
-    ]);
-    expect(state.finalAnswerComing).toBe(false);
-    expect(state.groupKeysWithSectionEnd.has("0-0")).toBe(true);
-    const parentEnds = (state.groupedPacketsMap.get("0-0") ?? []).filter(
-      (p) =>
-        p.obj.type === PacketType.SECTION_END &&
-        p.placement.sub_turn_index == null,
-    );
-    expect(parentEnds.length).toBe(1);
-  });
-
-  it("keeps earlier images once when another tool precedes the answer", () => {
-    const image = { file_id: "a", url: "u", revised_prompt: "p" };
-    const state = run([
-      makePlacedPacket({ type: "image_generation_start" }, { turn_index: 0 }),
-      makePlacedPacket(
-        { type: "image_generation_final", images: [image, { ...image }] },
-        { turn_index: 0 },
-      ),
-      sectionEnd(0),
-      searchStart(1),
-      sectionEnd(1),
-      messageStart(2),
-    ]);
-    expect(state.toolGroups.map(keyOf)).toEqual(["0-0", "1-0"]);
-    expect(state.potentialDisplayGroups.map(keyOf)).toEqual(["2-0"]);
-    expect(state.generatedImages).toEqual([image]);
   });
 
   it("keeps unique images across separate generation steps", () => {

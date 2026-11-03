@@ -164,7 +164,6 @@ module.exports = {
       testEnvironment: "node",
       testMatch: [
         // Pure unit tests that don't need DOM
-        "**/src/**/codeUtils.test.ts",
         "**/src/lib/**/*.test.ts",
         "**/src/app/**/*.test.ts",
         "**/src/hooks/**/*.test.ts",

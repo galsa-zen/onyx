@@ -13,7 +13,7 @@ const TOOL = "lookup_orders";
 const MESSAGE = "You have three open orders.";
 // Code mode runs behind the scenes; none of it is user-facing copy.
 const CODE_MODE_TEXT =
-  /program output|await lookup_orders|cell|Ran code|continues|execute_code|wait_code/i;
+  /program output|await lookup_orders|\bcell\b|Ran code|continues|execute_code|wait_code/i;
 
 test.describe("Code mode", () => {
   let chat: ChatPage;
@@ -47,9 +47,7 @@ test.describe("Code mode", () => {
       await sendMessage(page, "How many orders are open?");
       await expect(chat.aiMessage()).toContainText(MESSAGE);
       await expect(chat.aiMessage()).toContainText("1 step");
-      await page
-        .getByRole("button", { name: "Expand timeline", exact: true })
-        .click();
+      await chat.expandTimeline();
 
       await expect(chat.aiMessage().getByText(TOOL)).toHaveCount(1);
       await expect(chat.aiMessage()).not.toContainText(CODE_MODE_TEXT);

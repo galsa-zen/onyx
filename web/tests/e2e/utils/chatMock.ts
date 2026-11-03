@@ -163,53 +163,6 @@ export function buildMockImageGenStream({
   return serializePackets(packets);
 }
 
-/** A code mode program that generates one image, then the answer. */
-export function buildMockCodeModeImageStream({
-  fileId,
-  revisedPrompt,
-  message,
-}: Omit<ImageGenStreamOptions, "searchAfterImage">): string {
-  const { userMessageId, agentMessageId } = nextMessageIds();
-  const program = { turn_index: 0, tab_index: 0 };
-  const code = `await generate_image(prompt=${JSON.stringify(revisedPrompt)})`;
-
-  const packets = [
-    {
-      user_message_id: userMessageId,
-      reserved_assistant_message_id: agentMessageId,
-    },
-    {
-      placement: program,
-      obj: {
-        type: "tool_call_argument_delta",
-        tool_type: "execute_code",
-        tool_id: "call-code",
-        argument_deltas: { code },
-      },
-    },
-    { placement: program, obj: { type: "code_mode_start", code } },
-    ...imageGenerationPackets(
-      { ...program, sub_turn_index: 0 },
-      fileId,
-      revisedPrompt
-    ),
-    {
-      placement: program,
-      obj: {
-        type: "code_mode_delta",
-        stdout: "",
-        status: "completed",
-        duration_seconds: 1,
-        tool_call_count: 1,
-      },
-    },
-    { placement: program, obj: { type: "section_end" } },
-    ...answerPackets(1, agentMessageId, message, fileId),
-  ];
-
-  return serializePackets(packets);
-}
-
 export interface CodeModeCellStreamOptions {
   code: string;
   /** The custom tool the program calls; the call outlives the first observation. */
