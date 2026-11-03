@@ -16,39 +16,8 @@ import {
   createSearchToolStartPacket,
   createMessageStartPacket,
   createStopPacket,
+  createImageDeltaPacket,
 } from "./__tests__/testHelpers";
-
-// Mock the transformers module
-jest.mock("../transformers", () => ({
-  transformPacketGroups: jest.fn((groups) =>
-    groups.map(
-      (g: { turn_index: number; tab_index: number; packets: Packet[] }) => ({
-        key: `${g.turn_index}-${g.tab_index}`,
-        turnIndex: g.turn_index,
-        tabIndex: g.tab_index,
-        packets: g.packets,
-      })
-    )
-  ),
-  groupStepsByTurn: jest.fn((steps) => {
-    const turnMap = new Map<number, typeof steps>();
-    for (const step of steps) {
-      const existing = turnMap.get(step.turnIndex);
-      if (existing) {
-        existing.push(step);
-      } else {
-        turnMap.set(step.turnIndex, [step]);
-      }
-    }
-    return Array.from(turnMap.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([turnIndex, stepsForTurn]) => ({
-        turnIndex,
-        steps: stepsForTurn,
-        isParallel: stepsForTurn.length > 1,
-      }));
-  }),
-}));
 
 // ============================================================================
 // Tests
@@ -416,7 +385,7 @@ describe("usePacketProcessor", () => {
       expect(result.current.isComplete).toBe(false);
     });
 
-    test("true only when BOTH stopPacketSeen and renderComplete are true", () => {
+    test("true when stopped and the answer finished rendering", () => {
       const packets = [
         createMessageStartPacket({ turn_index: 0 }),
         createStopPacket(),
@@ -430,6 +399,17 @@ describe("usePacketProcessor", () => {
       act(() => {
         result.current.onRenderComplete();
       });
+
+      expect(result.current.isComplete).toBe(true);
+    });
+
+    test("true when stopped with no answer to render", () => {
+      const packets = [
+        createSearchToolStartPacket({ turn_index: 0 }),
+        createStopPacket(),
+      ];
+
+      const { result } = renderHook(() => usePacketProcessor(packets, 1));
 
       expect(result.current.isComplete).toBe(true);
     });
@@ -523,15 +503,80 @@ describe("usePacketProcessor", () => {
           }
         ),
         createPacket(PacketType.SECTION_END, { turn_index: 0 }),
+        createMessageStartPacket({ turn_index: 1 }),
         createStopPacket(),
       ];
 
       const { result } = renderHook(() => usePacketProcessor(packets, 1));
 
-      expect(result.current.generatedImages.length).toBe(1);
-      expect(result.current.finalAnswerComing).toBe(false);
+      expect(result.current.generatedImages.map((i) => i.file_id)).toEqual([
+        "img1",
+      ]);
+      expect(result.current.hasSteps).toBe(true);
+      expect(result.current.finalAnswerComing).toBe(true);
+      expect(result.current.displayGroups.length).toBe(1);
+    });
+
+    test("a stopped response of only generated images completes", () => {
+      const packets = [
+        createPacket(PacketType.IMAGE_GENERATION_TOOL_START, { turn_index: 0 }),
+        createImageDeltaPacket(1, { turn_index: 0 }),
+        createPacket(PacketType.SECTION_END, { turn_index: 0 }),
+        createStopPacket(),
+      ];
+
+      const { result } = renderHook(() => usePacketProcessor(packets, 1));
+
       expect(result.current.displayGroups.length).toBe(0);
-      expect(result.current.toolGroups.length).toBe(1);
+      expect(result.current.isComplete).toBe(true);
+    });
+
+    test("a response stopped during a tool step completes", () => {
+      const packets = [
+        createSearchToolStartPacket({ turn_index: 0 }),
+        createStopPacket(StopReason.USER_CANCELLED),
+      ];
+
+      const { result } = renderHook(() => usePacketProcessor(packets, 1));
+
+      expect(result.current.hasSteps).toBe(true);
+      expect(result.current.isComplete).toBe(true);
+    });
+
+    test("a stopped response of only an error completes", () => {
+      const packets = [
+        createPacket(
+          PacketType.ERROR,
+          { turn_index: 0 },
+          { message: "The model failed." }
+        ),
+        createStopPacket(),
+      ];
+
+      const { result } = renderHook(() => usePacketProcessor(packets, 1));
+
+      expect(result.current.isComplete).toBe(true);
+    });
+
+    test("a reloaded response of only generated images completes without a stop reason", () => {
+      // The image call, then a stop on the same turn with no stop reason and
+      // no message.
+      const packets = [
+        createPacket(PacketType.IMAGE_GENERATION_TOOL_START, { turn_index: 0 }),
+        createImageDeltaPacket(2, { turn_index: 0 }, "legacy"),
+        createPacket(PacketType.SECTION_END, { turn_index: 0 }),
+        createPacket(PacketType.STOP, { turn_index: 0 }, { stop_reason: null }),
+      ];
+
+      const { result } = renderHook(() => usePacketProcessor(packets, 1));
+
+      expect(result.current.generatedImages.map((i) => i.file_id)).toEqual([
+        "legacy-0",
+        "legacy-1",
+      ]);
+      expect(result.current.hasSteps).toBe(true);
+      expect(result.current.displayGroups.length).toBe(0);
+      expect(result.current.stopPacketSeen).toBe(true);
       expect(result.current.isComplete).toBe(true);
     });
   });

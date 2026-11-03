@@ -112,6 +112,8 @@ class DeepResearchAgent(Agent, RestorableFeature):
         agent_id: str | None = None,
     ) -> None:
         self.application_tools = allowed_tools
+        # The tools restored and child agents receive.
+        self.configured_tools = allowed_tools
         self.token_counter = token_counter
         self.user_identity = user_identity
         self.language_section = language_section

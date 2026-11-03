@@ -57,7 +57,10 @@ from onyx.prompts.deep_research.research_agent import (
     USER_REPORT_QUERY,
 )
 from onyx.prompts.prompt_utils import get_current_llm_day_time
-from onyx.prompts.tool_prompts import INTERNAL_SEARCH_GUIDANCE
+from onyx.prompts.tool_prompts import (
+    INTERNAL_SEARCH_GUIDANCE,
+    INTERNAL_SEARCH_QUERY_LIMIT,
+)
 from onyx.tools.interface import Tool
 from onyx.tools.models import ToolContext
 from onyx.tools.tool_implementations.open_url.open_url_tool import OpenURLTool
@@ -240,6 +243,7 @@ class ResearchAgent(Agent, RestorableFeature):
                 current_datetime=get_current_llm_day_time(full_sentence=False),
                 current_cycle_count=step.index,
                 optional_internal_search_tool_description=INTERNAL_SEARCH_GUIDANCE
+                + INTERNAL_SEARCH_QUERY_LIMIT
                 if SearchTool.NAME in tool_names
                 else "",
                 optional_web_search_tool_description=WEB_SEARCH_TOOL_DESCRIPTION

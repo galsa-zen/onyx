@@ -26,11 +26,15 @@ import {
   isDisplayPacket,
   isToolPacket,
 } from "@/chat/timeline/packetUtils";
-import { parseToolKey } from "@/chat/timeline/toolDisplay";
 import {
+  asStandalonePacket,
+  isCodeModePacket,
   isGroupEndPacket,
   isNestedPacket,
+  NestedCall,
+  nestedCallGroups,
 } from "@/chat/timeline/packetHelpers";
+import { parseToolKey } from "@/chat/timeline/toolDisplay";
 
 export interface ProcessedMessageState {
   nodeId: number;
@@ -43,11 +47,14 @@ export interface ProcessedMessageState {
   documentMap: Map<string, SearchDoc>;
 
   groupedPacketsMap: Map<string, Packet[]>;
+  // Nested calls of each group by sub_turn_index, placed at parent level once per packet
+  nestedCallsMap: Map<string, Map<number, Packet[]>>;
   seenGroupKeys: Set<string>;
   groupKeysWithSectionEnd: Set<string>;
   toolGroupKeys: Set<string>;
   displayGroupKeys: Set<string>;
 
+  // Images from every image generation call, nested calls included, unique by file_id
   generatedImages: GeneratedImage[];
 
   finalAnswerComing: boolean;
@@ -64,6 +71,8 @@ export interface GroupedPacket {
   turn_index: number;
   tab_index: number;
   packets: Packet[];
+  // The tool calls nested under this group, ordered by sub_turn_index.
+  nestedCalls: NestedCall[];
 }
 
 export function createInitialState(nodeId: number): ProcessedMessageState {
@@ -75,6 +84,7 @@ export function createInitialState(nodeId: number): ProcessedMessageState {
     seenCitationDocIds: new Set(),
     documentMap: new Map(),
     groupedPacketsMap: new Map(),
+    nestedCallsMap: new Map(),
     seenGroupKeys: new Set(),
     groupKeysWithSectionEnd: new Set(),
     toolGroupKeys: new Set(),
@@ -138,6 +148,7 @@ const CONTENT_PACKET_TYPES_SET = new Set<PacketType>([
 
 function hasContentPackets(packets: Packet[]): boolean {
   return packets.some((packet) => {
+    if (isCodeModePacket(packet)) return true;
     const type = packet.obj.type as PacketType;
     if (type === PacketType.TOOL_CALL_ARGUMENT_DELTA) {
       return (
@@ -272,15 +283,18 @@ function handleStopPacket(state: ProcessedMessageState, packet: Packet): void {
   });
 }
 
-// Claude may emit a message then start a real tool — the answer isn't actually coming yet.
-// Reasoning is excluded (just thinking, not a real tool call).
+// The model can write a message and then call a tool, so the answer is not final yet. Only a tool
+// packet that opens a new group is a new call: later packets of a known group (such as a code mode
+// cell's closing record) are not. Reasoning is not a tool call.
 function handleToolAfterMessagePacket(
   state: ProcessedMessageState,
   packet: Packet,
+  opensToolGroup: boolean,
 ): void {
   if (
     state.finalAnswerComing &&
     !state.stopPacketSeen &&
+    opensToolGroup &&
     isActualToolCallPacket(packet)
   ) {
     state.finalAnswerComing = false;
@@ -298,6 +312,14 @@ function addPacketToGroup(
   } else {
     state.groupedPacketsMap.set(groupKey, [packet]);
   }
+
+  const subTurnIndex = packet.placement.sub_turn_index;
+  if (subTurnIndex === undefined || subTurnIndex === null) return;
+  const calls = state.nestedCallsMap.get(groupKey) ?? new Map();
+  state.nestedCallsMap.set(groupKey, calls);
+  const call = calls.get(subTurnIndex) ?? [];
+  call.push(asStandalonePacket(packet));
+  calls.set(subTurnIndex, call);
 }
 
 function processPacket(state: ProcessedMessageState, packet: Packet): void {
@@ -318,8 +340,9 @@ function processPacket(state: ProcessedMessageState, packet: Packet): void {
   const isFirstPacket = !state.groupedPacketsMap.get(groupKey);
   addPacketToGroup(state, packet, groupKey);
 
+  const opensToolGroup = isFirstPacket && isToolPacket(packet, false);
   if (isFirstPacket) {
-    if (isToolPacket(packet, false)) {
+    if (opensToolGroup) {
       state.toolGroupKeys.add(groupKey);
     }
     if (isDisplayPacket(packet)) {
@@ -337,7 +360,7 @@ function processPacket(state: ProcessedMessageState, packet: Packet): void {
   handleDocumentPacket(state, packet);
   handleStreamingStatusPacket(state, packet);
   handleStopPacket(state, packet);
-  handleToolAfterMessagePacket(state, packet);
+  handleToolAfterMessagePacket(state, packet, opensToolGroup);
 }
 
 export function processPackets(
@@ -382,7 +405,16 @@ function buildGroupsFromKeys(
     .map((key) => {
       const { turn_index, tab_index } = parseToolKey(key);
       const packets = state.groupedPacketsMap.get(key);
-      return packets ? { turn_index, tab_index, packets: [...packets] } : null;
+      return packets
+        ? {
+            turn_index,
+            tab_index,
+            packets: [...packets],
+            nestedCalls: nestedCallGroups(
+              state.nestedCallsMap.get(key) ?? new Map(),
+            ),
+          }
+        : null;
     })
     .filter(
       (g): g is GroupedPacket => g !== null && hasContentPackets(g.packets),

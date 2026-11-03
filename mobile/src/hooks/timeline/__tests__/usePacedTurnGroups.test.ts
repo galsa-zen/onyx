@@ -28,6 +28,7 @@ function createStep(
         obj: { type },
       } as Packet,
     ],
+    nestedCalls: [],
   };
 }
 
@@ -54,6 +55,7 @@ function createDisplayGroup(turnIndex: number): GroupedPacket {
         },
       } as Packet,
     ],
+    nestedCalls: [],
   };
 }
 

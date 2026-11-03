@@ -1,20 +1,46 @@
+import inspect
 import json
+from typing import NotRequired, TypedDict
 
 from onyx.context.search.models import InferenceSection
 from onyx.context.search.utils import sandbox_filename_for_document
+from onyx.tools.models import CodeModeResultKind, CodeModeResultSpec
 from onyx.utils.logger import setup_logger
 
 logger = setup_logger()
 
 
-def truncate_output(output: str, max_length: int, label: str = "output") -> str:
-    """Truncate to ``max_length`` and append a footer noting how many chars were elided. ``label`` is only used in the debug log."""
-    truncated = output[:max_length]
-    if len(output) > max_length:
-        truncated += (
-            f"\n... [output truncated, {len(output) - max_length} characters omitted]"
+def truncate_output(
+    output: str,
+    max_length: int,
+    label: str = "output",
+    *,
+    keep_tail: bool = False,
+    elided: int = 0,
+) -> str:
+    """Truncate to ``max_length`` and note how many chars were elided.
+
+    With ``keep_tail`` the first and last halves are kept and the marker sits between
+    them; otherwise the marker is a footer. ``elided`` counts characters that the
+    caller already removed from the middle of ``output``; the marker includes them.
+    ``label`` is only used in the debug log.
+    """
+    if len(output) <= max_length:
+        return output
+    omitted = len(output) - max_length + elided
+    marker = f"\n... [output truncated, {omitted} characters omitted]"
+    if keep_tail:
+        head_length = max_length // 2
+        tail_length = max_length - head_length
+        truncated = (
+            output[:head_length]
+            + marker
+            + " ...\n"
+            + (output[-tail_length:] if tail_length else "")
         )
-        logger.debug("Truncated %s: %s", label, truncated)
+    else:
+        truncated = output[:max_length] + marker
+    logger.debug("Truncated %s: %s", label, truncated)
     return truncated
 
 
@@ -23,6 +49,40 @@ FILE_ASSOCIATED_GUIDANCE = (
     'file is available in the sandbox as "{filename}" — prefer the Python '
     "code interpreter to read, parse, or analyze it\n\n"
     "Excerpt: {content}"
+)
+
+
+# Search-like tool results as the model and code mode programs read them. The
+# code mode stubs declare these classes from their source.
+class SearchResult(TypedDict):
+    document: int
+    """Citation number. Cite it in the answer as [n]."""
+    title: str
+    content: str
+    url: NotRequired[str]
+    updated_at: NotRequired[str]
+    authors: NotRequired[list[str]]
+    source_type: NotRequired[str]
+    file_name: NotRequired[str]
+    document_identifier: NotRequired[str]
+    metadata: NotRequired[str]
+    """JSON-encoded metadata of the document."""
+
+
+class SearchResults(TypedDict):
+    results: list[SearchResult]
+    note: NotRequired[str]
+    message: NotRequired[str]
+
+
+SEARCH_RESULTS_CODE_MODE_RESULT = CodeModeResultSpec(
+    kind=CodeModeResultKind.JSON_OBJECT,
+    annotation=SearchResults.__name__,
+    declaration="\n\n\n".join(
+        inspect.getsource(typed_dict).strip()
+        for typed_dict in (SearchResult, SearchResults)
+    ),
+    cites=True,
 )
 
 
@@ -57,7 +117,7 @@ def convert_inference_sections_to_llm_string(
             current_citation_id += 1
 
     # Second pass: build results with citation_ids assigned per document
-    results = []
+    results: list[SearchResult] = []
 
     for section in top_sections:
         chunk = section.center_chunk
@@ -78,10 +138,22 @@ def convert_inference_sections_to_llm_string(
         if chunk.updated_at:
             updated_at_str = chunk.updated_at.isoformat()
 
+        if chunk.file_id is not None:
+            filename = sandbox_filename_for_document(
+                chunk.semantic_identifier, chunk.file_id
+            )
+            content = FILE_ASSOCIATED_GUIDANCE.format(
+                filename=filename, content=chunk.content
+            )
+        else:
+            filename = None
+            content = section.combined_content
+
         # Build result dictionary in desired order, only including non-None/empty fields
-        result = {
+        result: SearchResult = {
             "document": citation_id,
             "title": chunk.semantic_identifier,
+            "content": content,
         }
         if updated_at_str is not None:
             result["updated_at"] = updated_at_str
@@ -99,23 +171,13 @@ def convert_inference_sections_to_llm_string(
                 result["url"] = link
         if include_document_id:
             result["document_identifier"] = chunk.document_id
-        if chunk.file_id is not None:
-            filename = sandbox_filename_for_document(
-                chunk.semantic_identifier, chunk.file_id
-            )
+        if filename is not None:
             result["file_name"] = filename
-
-            result["content"] = FILE_ASSOCIATED_GUIDANCE.format(
-                filename=filename, content=chunk.content
-            )
-        else:
-            result["content"] = section.combined_content
         if chunk.metadata:
             result["metadata"] = json.dumps(chunk.metadata, ensure_ascii=False)
         results.append(result)
 
-    payload: dict[str, object] = {}
-    payload["results"] = results
+    payload: SearchResults = {"results": results}
     if note:
         payload["note"] = note
 

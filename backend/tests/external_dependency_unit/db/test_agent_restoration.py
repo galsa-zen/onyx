@@ -54,6 +54,8 @@ from onyx.llm.models import (
     UserMessage,
 )
 from onyx.prompts.chat_prompts import TOOL_CALL_RESPONSE_CROSS_MESSAGE
+from onyx.tools.models import GeneratedImage
+from onyx.tools.tool_implementations.images.models import FinalImageGenerationResponse
 from onyx.tracing.flows import LLMFlow
 from shared_configs.contextvars import get_current_tenant_id
 from tests.unit.onyx.agents.fakes import FakeModelClient
@@ -428,6 +430,15 @@ def test_saved_tools_filter_at_request_boundary(db_session: Session) -> None:
                     tool_call_id="image",
                     tool_name="generate_image",
                     content=image_content,
+                    details=FinalImageGenerationResponse(
+                        generated_images=[
+                            GeneratedImage(
+                                file_id="image",
+                                url="/api/chat/file/image",
+                                revised_prompt="Evidence chart",
+                            )
+                        ]
+                    ),
                 ),
                 AssistantMessage(content=[TextContent(text="Answer")]),
             ],
@@ -461,9 +472,11 @@ def test_saved_tools_filter_at_request_boundary(db_session: Session) -> None:
             context_files=None,
             token_counter=len,
         )
+        # Later prompts keep only references to generated images.
         assert [m.text for m in request if isinstance(m, ToolResultMessage)] == [
             TOOL_CALL_RESPONSE_CROSS_MESSAGE,
-            image_content,
+            f"{TOOL_CALL_RESPONSE_CROSS_MESSAGE}\nGenerated images: "
+            '[{"file_id": "image", "revised_prompt": "Evidence chart"}]',
         ]
         assert [m.text for m in history if isinstance(m, ToolResultMessage)] == [
             "Stored evidence",

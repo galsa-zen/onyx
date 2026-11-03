@@ -31,6 +31,9 @@ from onyx.llm.cancellation import AgentCancelled
 from onyx.llm.models import ToolDefinition, ToolResult
 from onyx.tools.interface import Tool, parse_tool_arguments
 from onyx.tools.models import (
+    CodeModeExposure,
+    CodeModeResultKind,
+    CodeModeResultSpec,
     GeneratedImage,
     ToolCallException,
     ToolContext,
@@ -40,6 +43,7 @@ from onyx.tools.tool_implementations.images.models import (
     FinalImageGenerationResponse,
     ImageGenerationArguments,
     ImageGenerationResponse,
+    ImageResult,
 )
 from onyx.utils.b64 import get_image_type_from_bytes
 from onyx.utils.logger import setup_logger
@@ -55,7 +59,7 @@ REFERENCE_IMAGE_FILE_IDS_FIELD = "reference_image_file_ids"
 
 class ImageGenerationTool(Tool):
     NAME = "generate_image"
-    DESCRIPTION = "Generate an image based on a prompt. Do not use unless the user specifically requests an image."
+    DESCRIPTION = "Generate an image based on a prompt. Do not use unless the user specifically requests an image. The image is shown to the user automatically."
     DISPLAY_NAME = "Image Generation"
 
     def __init__(
@@ -83,6 +87,10 @@ class ImageGenerationTool(Tool):
         return self._id
 
     @property
+    def code_mode_exposure(self) -> CodeModeExposure:
+        return CodeModeExposure.IMMEDIATE
+
+    @property
     def name(self) -> str:
         return self.NAME
 
@@ -93,6 +101,15 @@ class ImageGenerationTool(Tool):
     @property
     def display_name(self) -> str:
         return self.DISPLAY_NAME
+
+    @property
+    def code_mode_result(self) -> CodeModeResultSpec:
+        return CodeModeResultSpec(
+            kind=CodeModeResultKind.AUTO,
+            annotation=f"list[{ImageResult.__name__}]",
+            model=ImageResult,
+            returns="The images are shown to the user automatically.",
+        )
 
     @override
     @classmethod
@@ -366,10 +383,9 @@ class ImageGenerationTool(Tool):
 
         content = json.dumps(
             [
-                {
-                    "file_id": img.file_id,
-                    "revised_prompt": img.revised_prompt,
-                }
+                ImageResult(
+                    file_id=img.file_id, revised_prompt=img.revised_prompt
+                ).model_dump()
                 for img in generated_images_metadata
             ]
         )

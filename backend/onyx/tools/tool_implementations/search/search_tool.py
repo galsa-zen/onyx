@@ -36,6 +36,7 @@ refer to by using matching keywords to other parts of the prompt and reminders.
 
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -101,6 +102,7 @@ from onyx.llm.interfaces import LLM
 from onyx.llm.models import ToolDefinition, ToolResult, ToolResultMessage
 from onyx.natural_language_processing.search_nlp_models import EmbeddingModel
 from onyx.onyxbot.slack.models import SlackContext
+from onyx.prompts.tool_prompts import CODE_MODE_SEARCH_USAGE
 from onyx.secondary_llm_flows.decision_rerank_expansion import (
     MAX_DECISION_QUESTIONS,
     rank_sections_listwise,
@@ -125,6 +127,8 @@ from onyx.tools.interface import (
 )
 from onyx.tools.models import (
     ChatMinimalTextMessage,
+    CodeModeExposure,
+    CodeModeResultSpec,
     ToolCallException,
     ToolContext,
 )
@@ -154,6 +158,7 @@ from onyx.tools.tool_implementations.search.search_utils import (
     weighted_reciprocal_rank_fusion,
 )
 from onyx.tools.tool_implementations.utils import (
+    SEARCH_RESULTS_CODE_MODE_RESULT,
     convert_inference_sections_to_llm_string,
 )
 from onyx.utils.logger import setup_logger
@@ -689,6 +694,10 @@ class SearchTool(Tool):
         return self._id
 
     @property
+    def code_mode_exposure(self) -> CodeModeExposure:
+        return CodeModeExposure.IMMEDIATE
+
+    @property
     def name(self) -> str:
         return self.NAME
 
@@ -699,6 +708,10 @@ class SearchTool(Tool):
     @property
     def display_name(self) -> str:
         return self.DISPLAY_NAME
+
+    @property
+    def code_mode_result(self) -> CodeModeResultSpec:
+        return replace(SEARCH_RESULTS_CODE_MODE_RESULT, usage=CODE_MODE_SEARCH_USAGE)
 
     """For explicit tool calling"""
 

@@ -12978,6 +12978,9 @@
           },
           "updatingMemory": {
             "label": "Atualizando memória..."
+          },
+          "working": {
+            "label": "Trabalhando"
           }
         },
         "internalSearch": {

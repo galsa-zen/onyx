@@ -65,15 +65,15 @@ IMAGE_GENERATION_TOOL_NAME = "generate_image"
 
 
 def omit_prior_tool_result_content(messages: list[Message]) -> list[Message]:
-    """Keep saved tool content intact while omitting it from later chat prompts."""
+    """Keep saved tool content intact while omitting it from later chat prompts.
+
+    The prompt reads `omitted_result_text` in its place.
+    """
     return [
         message.model_copy(
             update={
                 "metadata": prompt_metadata(message).model_copy(
-                    update={
-                        "omit_tool_result_content": message.tool_name
-                        != IMAGE_GENERATION_TOOL_NAME
-                    }
+                    update={"omit_tool_result_content": True}
                 )
             }
         )

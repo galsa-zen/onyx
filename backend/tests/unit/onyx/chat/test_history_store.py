@@ -328,7 +328,8 @@ def test_incognito_regeneration_uses_selected_question_and_prompt_only_tool_poli
     assert messages[-1] is question
     assert answer not in messages
     assert previous is None
+    # Prompts read placeholders for both; image references survive in the placeholder.
     assert prompt_metadata(messages[0]).omit_tool_result_content
-    assert not prompt_metadata(messages[1]).omit_tool_result_content
+    assert prompt_metadata(messages[1]).omit_tool_result_content
     assert search.metadata is None
     assert cached.messages[-1] is answer
