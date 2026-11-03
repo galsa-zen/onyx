@@ -105,6 +105,12 @@ from onyx.llm.models import (
     resolve_reasoning_effort,
 )
 from onyx.llm.prompt_cache.processor import process_with_prompt_cache
+from onyx.llm.prompt_cache.providers.openai import (
+    PROMPT_CACHE_OPTIONS,
+    has_prompt_cache_breakpoint,
+    mark_tool_results,
+    uses_openai_explicit_cache_breakpoint,
+)
 from onyx.llm.utils import build_litellm_passthrough_kwargs, collect_credential_values
 from onyx.llm.well_known_providers.constants import VERTEX_LOCATION_KWARG
 from onyx.tracing.flows import LLMFlow
@@ -1075,6 +1081,11 @@ class LitellmLLM(LLM):
         if stream and not is_vertex_model_rejecting_stream_options:
             optional_kwargs["stream_options"] = {"include_usage": True}
 
+        # An explicit breakpoint needs explicit mode; requests without one
+        # (no tool result yet) keep implicit caching.
+        if is_openai_model and has_prompt_cache_breakpoint(prompt):
+            optional_kwargs["prompt_cache_options"] = PROMPT_CACHE_OPTIONS
+
         # Settle before anything reads it, so every branch below and tracing
         # see the same effort the provider will.
         reasoning_effort = resolve_reasoning_effort(
@@ -1895,6 +1906,10 @@ class LitellmLLM(LLM):
                 continuation=False,
                 with_metadata=False,
             )
+        # Independent of the cacheable prefix: OpenAI caching has no write cost,
+        # and the moving per-step reminder defeats implicit prefix reuse.
+        if uses_openai_explicit_cache_breakpoint(config):
+            messages = list(mark_tool_results(messages))
         return messages, cache_split_stats(request, cacheable_prefix)
 
     def invoke(
