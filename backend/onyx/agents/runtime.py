@@ -1215,8 +1215,9 @@ class Run:
         if on_finish is None:
             return []
         with self.execution_lock:
+            # Not copied: the hook reads them and must not change them.
             results = [
-                message.model_copy(deep=True)
+                message
                 for message in self._state.messages
                 if isinstance(message, ToolResultMessage)
             ]

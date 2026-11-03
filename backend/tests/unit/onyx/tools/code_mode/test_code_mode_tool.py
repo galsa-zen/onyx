@@ -105,7 +105,9 @@ class Invocation:
             cancellation=self.cancellation,
             update=self._update,
             messages=messages,
-            recorded_messages=messages,
+            recorded_results=[
+                m for m in messages if isinstance(m, ToolResultMessage)
+            ],
         )
 
     def _update(self, progress: ToolProgress) -> None:
@@ -261,7 +263,7 @@ def test_a_tool_that_waits_for_child_runs_fails_inside_the_program() -> None:
         tool,
         "try:\n    await waits(value='x')\nexcept Exception as e:\n    print(e)\n",
     )
-    assert "cannot run inside a program" in details.stdout
+    assert "returned no result inside a program" in details.stdout
 
 
 def test_sequential_tools_do_not_overlap() -> None:

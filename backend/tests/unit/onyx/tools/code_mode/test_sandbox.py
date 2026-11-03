@@ -3,6 +3,7 @@ import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import cast
 
 import pytest
 from pydantic import JsonValue
@@ -531,9 +532,11 @@ def test_a_waiting_program_keeps_its_worker_while_no_other_waits(
     dumps: list[int] = []
     suspend = sandbox._suspend
 
-    def counted(waiting: sandbox._Waiting) -> sandbox._Suspended | None:
+    def counted(
+        run: sandbox._Run, waiting: sandbox._Waiting
+    ) -> sandbox._Suspended | None:
         dumps.append(1)
-        return suspend(waiting)
+        return suspend(run, waiting)
 
     monkeypatch.setattr(sandbox, "_suspend", counted)
     result = run(
@@ -560,6 +563,54 @@ def test_a_dump_over_the_byte_budget_keeps_the_worker(
                 )
             )
     assert [result.stdout for result in results] == ["done 0\n", "done 1\n"]
+
+
+def test_a_dump_that_cannot_fit_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sandbox, "_suspended_bytes", sandbox._SuspendedBytes(10))
+
+    class Snapshot:
+        dumps = 0
+
+        def dump(self) -> bytes:
+            Snapshot.dumps += 1
+            return b"x" * 100
+
+    run_state = sandbox._Run(
+        limits=LIMITS,
+        function_names=FUNCTIONS,
+        plain_functions={},
+        handler=lambda _call: None,
+        cancellation=CancellationSignal(),
+        on_print=lambda _text: None,
+        on_yield=lambda: None,
+    )
+    waiting = sandbox._Waiting(cast(FunctionSnapshot, Snapshot()))
+    assert sandbox._suspend(run_state, waiting) is None
+    assert sandbox._suspend(run_state, waiting) is None
+    # The second dump is skipped: the first did not fit.
+    assert Snapshot.dumps == 1
+
+
+def test_each_waiting_program_claims_one_holder() -> None:
+    demand = sandbox._WorkerDemand()
+    woken: list[str] = []
+
+    def first() -> None:
+        woken.append("first")
+
+    def second() -> None:
+        woken.append("second")
+
+    with demand.holding(first), demand.holding(second):
+        with demand.waiting():
+            assert woken == ["first"]
+            assert demand.claimed(first) and not demand.claimed(second)
+            # A repeated claim adds none while the claim stands.
+            demand.claim()
+            assert woken == ["first"]
+        # A new waiter claims the other holder.
+        with demand.waiting(), demand.waiting():
+            assert woken == ["first", "second"]
 
 
 def test_program_state_and_store_survive_a_released_wait() -> None:

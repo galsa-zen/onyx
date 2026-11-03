@@ -3,12 +3,13 @@
 from collections.abc import Sequence
 
 from onyx.agents.compaction import count_tokens, head_and_tail_tokens
-from onyx.llm.models import Message, ToolResultMessage
+from onyx.llm.models import Message
 from onyx.tools.tool_implementations.code_mode.models import (
     CellClosing,
     CodeModeCall,
     CodeModeExecutionResult,
     CodeModeStatus,
+    code_mode_results,
 )
 from onyx.tools.tool_implementations.code_mode.sandbox import (
     IMPORTABLE_MODULES,
@@ -274,12 +275,7 @@ def earlier_cell_calls(messages: Sequence[Message]) -> dict[str, list[CodeModeCa
     """
     seen: dict[int, dict[int, CodeModeCall]] = {}
     earlier: dict[str, list[CodeModeCall]] = {}
-    for message in messages:
-        if not isinstance(message, ToolResultMessage):
-            continue
-        details = message.details
-        if not isinstance(details, CodeModeExecutionResult) or details.cell_id is None:
-            continue
+    for message, details in code_mode_results(messages):
         calls = seen.setdefault(details.cell_id, {})
         earlier[message.tool_call_id] = [calls[index] for index in sorted(calls)]
         calls.update({call.index: call for call in details.calls})
@@ -308,6 +304,6 @@ def omitted_observation_notes(
         )
     ):
         notes.append(f"The program did not complete ({ended}). {note}")
-    if closing is not None and details.cell_id is not None:
+    if closing is not None:
         notes.append(closing_line(details.cell_id, closing))
     return notes

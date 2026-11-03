@@ -10,7 +10,6 @@ survives restarts, and keeps values that history compaction hides from the
 model.
 """
 
-import json
 import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -18,10 +17,12 @@ from dataclasses import dataclass
 from pydantic import JsonValue
 from pydantic_monty import MontyClassProxy
 
-from onyx.llm.models import Message, ToolResultMessage
+from onyx.llm.models import Message
 from onyx.tools.tool_implementations.code_mode.models import (
-    CodeModeExecutionResult,
     StoreCommit,
+    code_mode_results,
+    entry_bytes,
+    json_text,
 )
 
 STORE_FUNCTION = "store"
@@ -89,35 +90,14 @@ def json_value(value: object, what: str, path: str = "") -> JsonValue:
     )
 
 
-def _serialized(value: JsonValue) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-def serialized_bytes(value: JsonValue) -> int:
-    return len(_serialized(value).encode("utf-8"))
-
-
-def merged(
-    store: Mapping[str, JsonValue], writes: Mapping[str, JsonValue]
-) -> dict[str, JsonValue]:
-    """The store after `writes`; a None value deletes its key."""
-    result = dict(store)
-    for key, value in writes.items():
-        if value is None:
-            result.pop(key, None)
-        else:
-            result[key] = value
-    return result
-
-
-def commits(message: Message) -> list[StoreCommit]:
-    """The store commits that a message records; empty for other messages."""
-    if not isinstance(message, ToolResultMessage):
-        return []
-    details = message.details
-    if not isinstance(details, CodeModeExecutionResult):
-        return []
-    return [window.commit for window in details.windows() if window.commit is not None]
+def _commits(messages: Iterable[Message]) -> list[StoreCommit]:
+    """The store commits that `messages` record."""
+    return [
+        window.commit
+        for _, details in code_mode_results(messages)
+        for window in details.windows()
+        if window.commit is not None
+    ]
 
 
 @dataclass(frozen=True)
@@ -131,11 +111,6 @@ class StoreSnapshot:
     last_ordinal: int = 0
 
 
-def _entry_bytes(key: str, value: JsonValue) -> int:
-    """Bytes of a key and its JSON value; a deletion (None) counts its key only."""
-    return len(key.encode("utf-8")) + (0 if value is None else serialized_bytes(value))
-
-
 def store_snapshot(
     messages: Iterable[Message], live: Iterable[StoreCommit] = ()
 ) -> StoreSnapshot:
@@ -145,17 +120,19 @@ def store_snapshot(
     The fold does not depend on message order, so the saved history gives the
     store that programs saw while the response ran.
     """
-    recorded = [commit for message in messages for commit in commits(message)]
+    recorded = _commits(messages)
     known = {commit.ordinal for commit in recorded}
     pending = [commit for commit in live if commit.ordinal not in known]
     store: dict[str, JsonValue] = {}
     committed_bytes = 0
     last_ordinal = 0
     for commit in sorted([*recorded, *pending], key=lambda commit: commit.ordinal):
-        store = merged(store, commit.writes)
-        committed_bytes += sum(
-            _entry_bytes(key, value) for key, value in commit.writes.items()
-        )
+        for key, value in commit.writes.items():
+            if value is None:
+                store.pop(key, None)
+            else:
+                store[key] = value
+        committed_bytes += commit.size_bytes
         last_ordinal = commit.ordinal
     return StoreSnapshot(
         values=store, committed_bytes=committed_bytes, last_ordinal=last_ordinal
@@ -166,7 +143,7 @@ def _differs(before: JsonValue, after: JsonValue) -> bool:
     if before is None or after is None:
         return before is not after
     # Serialized, so that 1, 1.0 and True stay distinct.
-    return _serialized(before) != _serialized(after)
+    return json_text(before) != json_text(after)
 
 
 def changed_writes(
@@ -210,7 +187,7 @@ class ProgramStore:
         self._snapshot = snapshot
         self._values = dict(snapshot.values)
         self._sizes = {
-            key: _entry_bytes(key, value) for key, value in self._values.items()
+            key: entry_bytes(key, value) for key, value in self._values.items()
         }
         self._total = sum(self._sizes.values())
         self._writes: dict[str, JsonValue] = {}
@@ -239,7 +216,7 @@ class ProgramStore:
     def store(self, key: object, value: object) -> None:
         valid_key = _valid_key(key)
         stored = json_value(value, f'Cannot store "{valid_key}": the value')
-        value_bytes = 0 if stored is None else serialized_bytes(stored)
+        value_bytes = 0 if stored is None else len(json_text(stored).encode("utf-8"))
         if value_bytes > MAX_STORED_VALUE_BYTES:
             raise ValueError(
                 f'Cannot store "{valid_key}": the value is {value_bytes} bytes as '

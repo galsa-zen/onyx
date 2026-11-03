@@ -112,7 +112,9 @@ class Response:
             arguments=arguments,
             cancellation=self.cancellation,
             update=update,
-            recorded_messages=list(self.recorded),
+            recorded_results=[
+                m for m in self.recorded if isinstance(m, ToolResultMessage)
+            ],
         )
 
     def record(self, invocation: ToolInvocation, result: ToolResult) -> ToolResult:

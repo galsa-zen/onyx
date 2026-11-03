@@ -1,12 +1,14 @@
 """Typed details for code mode: one model-written program that calls other tools."""
 
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Iterable
+from functools import cached_property
 from typing import Annotated, Literal, Self, get_args
 
 from pydantic import BaseModel, Field, JsonValue, SerializeAsAny
 
 from onyx.context.search.models import SearchDocsResponse
-from onyx.llm.models import ToolResultMessage
+from onyx.llm.models import Message, ToolResultMessage
 from onyx.tools.models import (
     CustomToolCallSummary,
     FileReadResult,
@@ -90,6 +92,18 @@ class CodeModeCall(BaseModel):
         )
 
 
+def json_text(value: JsonValue) -> str:
+    """Compact JSON of a stored value; the store measures and compares this."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def entry_bytes(key: str, value: JsonValue) -> int:
+    """Bytes of a key and its JSON value; a deletion (None) counts its key only."""
+    return len(key.encode("utf-8")) + (
+        0 if value is None else len(json_text(value).encode("utf-8"))
+    )
+
+
 class StoreCommit(BaseModel):
     """The store() writes of one cell that ended by itself (completed, or stopped
     at an uncaught exception), None deleting the key, and the commit's place in
@@ -97,6 +111,11 @@ class StoreCommit(BaseModel):
 
     ordinal: int
     writes: dict[str, JsonValue]
+
+    @cached_property
+    def size_bytes(self) -> int:
+        """Bytes the commit adds to the chat's saved history; measured once."""
+        return sum(entry_bytes(key, value) for key, value in self.writes.items())
 
 
 class CellWindow(BaseModel):
@@ -163,6 +182,18 @@ class CodeModeExecutionResult(CellWindow):
                 ),
             }
         )
+
+
+def code_mode_results(
+    messages: Iterable[Message],
+) -> list[tuple[ToolResultMessage, CodeModeExecutionResult]]:
+    """The saved code mode observations among `messages`, with their details."""
+    return [
+        (message, message.details)
+        for message in messages
+        if isinstance(message, ToolResultMessage)
+        and isinstance(message.details, CodeModeExecutionResult)
+    ]
 
 
 # Progress details, sent through ToolInvocation.update while the program runs.

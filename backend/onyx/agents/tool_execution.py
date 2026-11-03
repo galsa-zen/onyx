@@ -43,7 +43,7 @@ logger = setup_logger()
 
 def _tool_view(message: Message) -> Message:
     """An owned copy of a conversation message for a tool. Result details stay
-    with the runtime; tools read them from `recorded_messages`."""
+    with the runtime; tools read them from `recorded_results`."""
     if isinstance(message, ToolResultMessage) and message.details is not None:
         message = message.model_copy(update={"details": None})
     return message.model_copy(deep=True)
@@ -77,8 +77,10 @@ class ToolBatch:
         self.message_id = self.message.id
         self.options = progress.options
         self.context_messages = history
-        # Every recorded message before this step.
-        self.recorded_messages = tuple(recorded)
+        # Every recorded tool result before this step.
+        self.recorded_results = tuple(
+            message for message in recorded if isinstance(message, ToolResultMessage)
+        )
         self.calls = self.message.tool_calls
         if len(self.calls) > MAX_TOOL_CALLS_PER_STEP or len(
             {call.id for call in self.calls}
@@ -98,9 +100,9 @@ class ToolBatch:
             messages=[_tool_view(item) for item in self.context_messages],
         )
 
-    def _recorded_before(self) -> tuple[Message, ...]:
-        """Recorded messages before a call: earlier steps, then this step's message
-        and its completed results in call order."""
+    def _recorded_before(self) -> tuple[ToolResultMessage, ...]:
+        """Recorded tool results before a call: earlier steps, then this step's
+        completed results in call order."""
         with self.run.execution_lock:
             results = [
                 execution.result
@@ -108,7 +110,7 @@ class ToolBatch:
                 if (execution := self.record.tools.get(call.id)) is not None
                 and execution.result is not None
             ]
-        return (*self.recorded_messages, self.message, *results)
+        return (*self.recorded_results, *results)
 
     def _was_started(self, call: ToolCall) -> bool:
         with self.run.execution_lock:
@@ -255,9 +257,7 @@ class ToolBatch:
         ):
             # A lost execution owner left the call running. The result ends the
             # call through `finish_tool`, as a completed call does.
-            self.run.record_tool_results(
-                tool.interrupted_result(call.model_copy(deep=True).arguments), [call]
-            )
+            self.run.record_tool_results(tool.interrupted_result, [call])
             return
         if (
             tool is None
@@ -368,7 +368,7 @@ class ToolBatch:
                 _tool_view(message)
                 for message in (context.messages if context else self.context_messages)
             ],
-            recorded_messages=self._recorded_before(),
+            recorded_results=self._recorded_before(),
             agents=self.run.coordination.for_tool(call.id, self.message_id, active)
             if self.run.coordination
             else None,

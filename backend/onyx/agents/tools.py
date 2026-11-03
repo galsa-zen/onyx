@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, JsonValue, SerializeAsAny, model_validator
 
 from onyx.llm.cancellation import CancellationSignal
-from onyx.llm.models import Message, ToolDefinition, ToolResult
+from onyx.llm.models import Message, ToolDefinition, ToolResult, ToolResultMessage
 
 if TYPE_CHECKING:
     from onyx.agents.models import AgentInfo, RunResult, RunState
@@ -145,7 +145,7 @@ class ToolInvocation:
         cancellation: CancellationSignal,
         update: ToolUpdate,
         messages: Sequence[Message] = (),
-        recorded_messages: Sequence[Message] = (),
+        recorded_results: Sequence[ToolResultMessage] = (),
         agents: AgentControl | None = None,
         trace_metadata: Mapping[str, JsonValue] | None = None,
     ) -> None:
@@ -157,11 +157,11 @@ class ToolInvocation:
         # The model's view of the conversation, after compaction, without result
         # details. Read only.
         self.messages = messages
-        # Every recorded message of the conversation before this call, without
-        # compaction, oldest first: earlier steps, then this step's message and its
-        # completed results in call order. For state derived from the whole
-        # conversation. Read only.
-        self.recorded_messages = recorded_messages
+        # Every recorded tool result of the conversation before this call, with
+        # details and without compaction, oldest first: earlier steps, then this
+        # step's completed results in call order. For state derived from the
+        # whole conversation. Read only.
+        self.recorded_results = recorded_results
         # Attributes of the call's tracing span.
         self.trace_metadata = trace_metadata
         self._agents = agents
@@ -187,8 +187,8 @@ class AgentTool:
     must return ToolResult; each original call receives the pooled result.
 
     A call that a lost execution owner left running runs again on restore, unless
-    interrupted_result is set; then that result is saved as the call's cancelled
-    result instead.
+    interrupted_result is set; then that result is saved as the call's result
+    instead, with status error when it is an error.
     """
 
     def __init__(
@@ -203,7 +203,7 @@ class AgentTool:
             [dict[str, JsonValue], dict[str, JsonValue]], dict[str, JsonValue] | None
         ]
         | None = None,
-        interrupted_result: Callable[[dict[str, JsonValue]], ToolResult] | None = None,
+        interrupted_result: ToolResult | None = None,
     ) -> None:
         self.definition = definition
         self.execute = execute

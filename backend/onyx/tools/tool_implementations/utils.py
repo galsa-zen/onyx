@@ -16,18 +16,15 @@ def truncate_output(
     label: str = "output",
     *,
     keep_tail: bool = False,
-    elided: int = 0,
 ) -> str:
     """Truncate to ``max_length`` and note how many chars were elided.
 
     With ``keep_tail`` the first and last halves are kept and the marker sits between
-    them; otherwise the marker is a footer. ``elided`` counts characters that the
-    caller already removed from the middle of ``output``; the marker includes them.
-    ``label`` is only used in the debug log.
+    them; otherwise the marker is a footer. ``label`` is only used in the debug log.
     """
     if len(output) <= max_length:
         return output
-    omitted = len(output) - max_length + elided
+    omitted = len(output) - max_length
     marker = f"\n... [output truncated, {omitted} characters omitted]"
     if keep_tail:
         head_length = max_length // 2

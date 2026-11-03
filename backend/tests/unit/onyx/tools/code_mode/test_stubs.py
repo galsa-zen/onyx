@@ -44,6 +44,8 @@ def _unused(*_: object) -> ToolResult:
         ("load", "load_tool"),
         ("TypedDict", "TypedDict_tool"),
         ("tool_search", "tool_search_tool"),
+        ("functions", "functions_tool"),
+        ("yield_control", "yield_control_tool"),
         ("SearchResults", "SearchResults"),
     ],
 )

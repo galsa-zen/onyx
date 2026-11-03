@@ -91,11 +91,6 @@ MAX_CONCURRENT_TOOL_CALLS = 16
 # thread within its program's share waits in its program's queue. A call that
 # ignores cancellation keeps its thread until it returns.
 MAX_TOOL_CALL_THREADS = 192
-metrics.set_code_mode_limits(
-    sandbox_workers=MAX_SANDBOX_PROCESSES,
-    suspended_bytes=MAX_SUSPENDED_BYTES,
-    tool_call_threads=MAX_TOOL_CALL_THREADS,
-)
 
 YIELD_CONTROL_FUNCTION = "yield_control"
 YIELD_CONTROL_STUB = '''def yield_control() -> None:
@@ -134,6 +129,10 @@ _SYNC_SLEEP = "system.sleep"
 # The module that also holds every function of a program, so
 # `from functions import f` and `functions.f(...)` work like the globals.
 FUNCTIONS_MODULE = "functions"
+# Global names the sandbox gives every program; tool functions must not shadow them.
+SANDBOX_NAMES: frozenset[str] = frozenset(
+    {*IMPORTABLE_MODULES, FUNCTIONS_MODULE, YIELD_CONTROL_FUNCTION}
+)
 # OS calls of an import: the type checker's stub request and the import itself.
 # Monty answers them from the session's external modules.
 _IMPORT_CALLS: frozenset[str] = frozenset({"import", "import_stubs"})
@@ -259,6 +258,11 @@ def sandbox_pool() -> Monty:
             pool.__enter__()
             atexit.register(pool.__exit__, None, None, None)
             _pool = pool
+            metrics.set_code_mode_limits(
+                sandbox_workers=MAX_SANDBOX_PROCESSES,
+                suspended_bytes=MAX_SUSPENDED_BYTES,
+                tool_call_threads=MAX_TOOL_CALL_THREADS,
+            )
         return _pool
 
 
@@ -379,42 +383,59 @@ _tool_call_threads = _ToolCallThreads(MAX_TOOL_CALL_THREADS)
 
 
 class _WorkerDemand:
-    """Programs that wait for a free sandbox worker. A program that waits on its
-    tool calls keeps its worker until one does."""
+    """Programs that wait for a free sandbox worker, and holders: programs that
+    keep their worker while they wait on their tool calls.
+
+    Each waiting program claims one holder, which gives up its worker; the other
+    holders keep theirs. A waiting program claims again each time its checkout
+    times out, so a claim that freed no worker for it is replaced.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._waiting = 0
-        # Wake-ups of programs that keep a worker while they wait.
-        self._holders: set[Callable[[], None]] = set()
+        # Wake-ups of the holders, oldest first.
+        self._holders: dict[Callable[[], None], None] = {}
+        self._claimed: set[Callable[[], None]] = set()
 
     @contextmanager
     def waiting(self) -> Iterator[None]:
         with self._lock:
             self._waiting += 1
-            holders = tuple(self._holders)
-        for wake in holders:
-            wake()
+        self.claim()
         try:
             yield
         finally:
             with self._lock:
                 self._waiting -= 1
 
-    @property
-    def wanted(self) -> bool:
+    def claim(self) -> None:
+        """Claim an unclaimed holder while fewer are claimed than programs wait."""
         with self._lock:
-            return self._waiting > 0
+            if len(self._claimed) >= self._waiting:
+                return
+            holder = next((h for h in self._holders if h not in self._claimed), None)
+            if holder is None:
+                return
+            self._claimed.add(holder)
+        holder()
+
+    def claimed(self, wake: Callable[[], None]) -> bool:
+        """Whether the holder of `wake` must give up its worker."""
+        with self._lock:
+            return wake in self._claimed
 
     @contextmanager
     def holding(self, wake: Callable[[], None]) -> Iterator[None]:
         with self._lock:
-            self._holders.add(wake)
+            self._holders[wake] = None
+        self.claim()
         try:
             yield
         finally:
             with self._lock:
-                self._holders.discard(wake)
+                self._holders.pop(wake, None)
+                self._claimed.discard(wake)
 
 
 class _SuspendedBytes:
@@ -424,6 +445,11 @@ class _SuspendedBytes:
     def __init__(self, limit: int) -> None:
         self._lock = threading.Lock()
         self._free = limit
+
+    @property
+    def free(self) -> int:
+        with self._lock:
+            return self._free
 
     def reserve(self, size: int) -> bool:
         with self._lock:
@@ -501,6 +527,9 @@ class _Run:
         # Set when a call ends, a tool call thread frees up, or the run is cancelled.
         self.wake = threading.Event()
         self.tool_calls = 0
+        # Bytes of the program's last dump; a dump this large that cannot fit is
+        # not attempted.
+        self.last_dump_bytes = 0
         # Non-fatal type checker diagnostics of the program.
         self.type_check_notes: str | None = None
 
@@ -672,7 +701,7 @@ class _Run:
                 self.start_queued()
                 if any(self._finished(call_id) for call_id in call_ids):
                     return True
-                if yield_worker and _worker_demand.wanted:
+                if yield_worker and _worker_demand.claimed(self.wake.set):
                     return False
                 timeout = min(wakeup, self.deadline) - time.monotonic()
                 self.wake.wait(None if math.isinf(timeout) else max(0.0, timeout))
@@ -749,7 +778,7 @@ def _watched(run: _Run, pid: int | None) -> Iterator[None]:
         with lock:
             if computing is not None:
                 _kill_worker(computing)
-                metrics.SANDBOX_WORKERS_LOST.labels(reason="killed").inc()
+                metrics.count_worker_lost("killed")
                 computing = None
 
     remaining = run.deadline - time.monotonic()
@@ -867,13 +896,21 @@ def _resumed(waiting: _Waiting) -> SyncSnapshot:
     return waiting.state
 
 
-def _suspend(waiting: _Waiting) -> _Suspended | None:
-    """Dump a waiting program; None when the dump does not fit MAX_SUSPENDED_BYTES."""
-    snapshot = waiting.state.dump()
-    if not _suspended_bytes.reserve(len(snapshot)):
-        metrics.SUSPENSIONS.labels(outcome="over_budget").inc()
+def _suspend(run: _Run, waiting: _Waiting) -> _Suspended | None:
+    """Dump a waiting program; None when the dump does not fit MAX_SUSPENDED_BYTES.
+
+    The program's last dump size estimates the next, so a dump that cannot fit is
+    skipped.
+    """
+    if run.last_dump_bytes > _suspended_bytes.free:
+        metrics.count_suspension("over_budget")
         return None
-    metrics.SUSPENSIONS.labels(outcome="dumped").inc()
+    snapshot = waiting.state.dump()
+    run.last_dump_bytes = len(snapshot)
+    if not _suspended_bytes.reserve(len(snapshot)):
+        metrics.count_suspension("over_budget")
+        return None
+    metrics.count_suspension("dumped")
     return _Suspended(snapshot=snapshot, call_ids=waiting.call_ids)
 
 
@@ -917,8 +954,9 @@ def _checkout(
                 except TimeoutError:
                     if time.monotonic() >= give_up:
                         raise
-                    # Once, so programs that keep a worker give it up.
-                    if not waiting:
+                    if waiting:
+                        _worker_demand.claim()
+                    else:
                         demand.enter_context(_worker_demand.waiting())
                         demand.enter_context(
                             metrics.PROGRAMS_WAITING_FOR_WORKER.track_inprogress()
@@ -975,7 +1013,6 @@ def execute_program(
         error: str | None = None,
         raised: bool = False,
     ) -> SandboxResult:
-        _tool_call_threads.forget(run.wake.set)
         return SandboxResult(
             status=status,
             result=bounded(result, "code mode result"),
@@ -1007,7 +1044,7 @@ def execute_program(
                     )
                     while isinstance(step, _Waiting):
                         if not run.wait_for_any(step.call_ids, yield_worker=True):
-                            suspended = _suspend(step)
+                            suspended = _suspend(run, step)
                             if suspended is not None:
                                 break
                             run.wait_for_any(step.call_ids)
@@ -1027,7 +1064,7 @@ def execute_program(
         if aborted is not None:
             return finish(aborted.status, error=str(aborted))
         logger.warning("Code mode sandbox worker crashed: %s", error)
-        metrics.SANDBOX_WORKERS_LOST.labels(reason="crashed").inc()
+        metrics.count_worker_lost("crashed")
         return finish("timed_out" if error.timed_out else "failed", error=CRASH_MESSAGE)
     except MontyError as error:
         logger.warning("Code mode sandbox failed: %s", error)
@@ -1036,6 +1073,7 @@ def execute_program(
         metrics.SANDBOX_BUSY_REJECTIONS.inc()
         return finish("failed", error=BUSY_MESSAGE)
     finally:
+        _tool_call_threads.forget(run.wake.set)
         if suspended is not None:
             _suspended_bytes.release(len(suspended.snapshot))
     return finish(

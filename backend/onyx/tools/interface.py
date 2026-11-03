@@ -153,7 +153,7 @@ class Tool(abc.ABC):
     result_from_children: ToolResultFromChildren | None = None
     # Set by tools that must not run twice: the saved result of a call that
     # stopped before it finished. See AgentTool.
-    interrupted_result: Callable[[dict[str, JsonValue]], ToolResult] | None = None
+    interrupted_result: ToolResult | None = None
     merge_list_argument: str | None = None
     merge_list_limit: int | None = None
 

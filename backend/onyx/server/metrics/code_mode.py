@@ -9,6 +9,8 @@ from typing import Literal
 
 from prometheus_client import Counter, Gauge, Histogram
 
+from onyx.tools.tool_implementations.code_mode.models import ClosedStatus
+
 WorkerLossReason = Literal["crashed", "killed"]
 SuspensionOutcome = Literal["dumped", "over_budget"]
 
@@ -97,6 +99,14 @@ def set_code_mode_limits(
     TOOL_CALL_THREADS_LIMIT.set(tool_call_threads)
 
 
-def observe_program_end(status: str, duration_seconds: float) -> None:
+def observe_program_end(status: ClosedStatus, duration_seconds: float) -> None:
     PROGRAMS.labels(status=status).inc()
     PROGRAM_DURATION.observe(duration_seconds)
+
+
+def count_worker_lost(reason: WorkerLossReason) -> None:
+    SANDBOX_WORKERS_LOST.labels(reason=reason).inc()
+
+
+def count_suspension(outcome: SuspensionOutcome) -> None:
+    SUSPENSIONS.labels(outcome=outcome).inc()

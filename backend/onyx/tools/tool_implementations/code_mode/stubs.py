@@ -20,8 +20,7 @@ from onyx.tools.models import (
     CustomToolCallSummary,
 )
 from onyx.tools.tool_implementations.code_mode.sandbox import (
-    IMPORTABLE_MODULES,
-    YIELD_CONTROL_FUNCTION,
+    SANDBOX_NAMES,
     YIELD_CONTROL_STUB,
     PlainFunction,
 )
@@ -31,8 +30,8 @@ from onyx.tools.tool_implementations.code_mode.store import (
     json_value,
 )
 from onyx.tools.tool_implementations.code_mode.tool_search import (
-    TOOL_MATCH_TYPE,
     TOOL_SEARCH_FUNCTION,
+    TOOL_SEARCH_NAMES,
     TOOL_SEARCH_STUBS,
     SearchableFunction,
     ToolIndex,
@@ -58,19 +57,18 @@ _STUB_HEADER = (
 
 _DECLARED_TYPE = re.compile(r"^class (\w+)", re.MULTILINE)
 _SYNTAX_NAMES: frozenset[str] = frozenset({*keyword.kwlist, *keyword.softkwlist})
-# Names a tool function must not shadow: Python syntax, builtins, the modules
-# programs import, and the names the stub header declares. The result types
-# that the tools declare are added per stub module.
+# Names a tool function must not shadow: Python syntax, builtins, the names
+# the sandbox, the store and the tool search give programs, and the typing names
+# of the stub header. The result types that the tools declare are added per stub
+# module.
 _RESERVED_FUNCTION_NAMES: frozenset[str] = frozenset(
     {
         *_SYNTAX_NAMES,
         *dir(builtins),
-        *IMPORTABLE_MODULES,
         *_TYPING_NAMES,
+        *SANDBOX_NAMES,
         *STORE_FUNCTIONS,
-        YIELD_CONTROL_FUNCTION,
-        TOOL_SEARCH_FUNCTION,
-        TOOL_MATCH_TYPE,
+        *TOOL_SEARCH_NAMES,
     }
 )
 

@@ -417,7 +417,7 @@ health calls are not retried.
     completion (`CellWindow.commit`): the observation's, or its `CellClosing`
     when the cell completed after its last observation. The store has no table
     or cache: `tools/tool_implementations/code_mode/store.py:store_snapshot`
-    folds the commits in `ToolInvocation.recorded_messages`, plus this
+    folds the commits in `ToolInvocation.recorded_results`, plus this
     response's commits not yet recorded, in ordinal order, key by key. So it
     follows chat branches and checkpoint restore and survives restarts and
     compaction. Do not read
@@ -446,10 +446,10 @@ health calls are not retried.
     a call started by a lost owner saves the tool's `Tool.interrupted_result`
     instead of running it again; the result ends the call through
     `agents/runtime.py:Run.finish_tool`, as a completed call does.
-    `CodeModeTool` sets it to
-    `tools/tool_implementations/code_mode/code_mode_tool.py:interrupted_program_result`
+    The call's status is `error`. `CodeModeTool` sets it to
+    `tools/tool_implementations/code_mode/code_mode_tool.py:INTERRUPTED_PROGRAM_RESULT`
     (an error without details). `WaitCodeTool` sets it to
-    `tools/tool_implementations/code_mode/code_mode_tool.py:interrupted_wait_result`,
+    `tools/tool_implementations/code_mode/code_mode_tool.py:INTERRUPTED_WAIT_RESULT`,
     an error without details: the cell's last saved observation stays
     `running`. At the end of every run, `Agent.on_finish`
     (`chat/agent.py:_finished_cells`) calls `CodeCells.finish`. It stops each
@@ -458,7 +458,7 @@ health calls are not retried.
     `ToolResultAmendment` for each observation that Stop interrupted and for
     each cell whose last saved observation is `running`. The amendment adds a `CellClosing` (`reason="response_ended"`)
     with the calls, output and store commit after that observation. For a
-    restored run, `tools/tool_implementations/code_mode/cells.py:interrupted_amendments` closes such observations
+    restored run, `tools/tool_implementations/code_mode/cells.py:_interrupted_amendments` closes such observations
     with `reason="interrupted"` and status `cancelled`, since what the cell did
     after them is not known. The run applies the amendments before it saves
     and publishes `ToolResultAmendedEvent` for each, before `AgentEndEvent`.

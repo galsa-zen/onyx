@@ -23,6 +23,7 @@ from onyx.agents.models import ToolResultAmendment
 from onyx.agents.tools import ToolInvocation, ToolProgress
 from onyx.context.search.models import SearchDocsResponse
 from onyx.llm.cancellation import AgentCancelled, CancellationSignal, cancellation_scope
+from onyx.llm.constants import APPROX_CHARS_PER_TOKEN
 from onyx.llm.models import Message, ToolResult, ToolResultMessage
 from onyx.server.metrics import code_mode as metrics
 from onyx.tools.interface import CITATIONS_PER_TOOL_CALL, Tool
@@ -32,6 +33,7 @@ from onyx.tools.models import (
     FileReadResult,
     LlmBashExecutionResult,
     LlmPythonExecutionResult,
+    ToolCallException,
     ToolContext,
     ToolExecutionError,
 )
@@ -49,6 +51,7 @@ from onyx.tools.tool_implementations.code_mode.models import (
     CodeModeStatus,
     CodeModeStdout,
     StoreCommit,
+    code_mode_results,
 )
 from onyx.tools.tool_implementations.code_mode.prompt import (
     closing_line,
@@ -103,26 +106,32 @@ CELL_SPAN_NAME = "code_mode_cell"
 
 # Tokens of output that one observation returns to the model by default.
 DEFAULT_MAX_OUTPUT_TOKENS = 10_000
-# Characters per token for bounds that are set in characters, so they need no
-# tokenizer.
-CHARS_PER_TOKEN = 4
 # Printed text streamed while a cell runs: about the default token budget. The
 # observation's saved output replaces it.
-LIVE_OUTPUT_CHARS = CHARS_PER_TOKEN * DEFAULT_MAX_OUTPUT_TOKENS
+LIVE_OUTPUT_CHARS = APPROX_CHARS_PER_TOKEN * DEFAULT_MAX_OUTPUT_TOKENS
+# Printed text for an attached observer goes out in batches: at this size, after
+# STDOUT_FLUSH_SECONDS, before the next call event, and when the observation ends.
+STDOUT_FLUSH_CHARS = 4_096
+STDOUT_FLUSH_SECONDS = 0.05
 
 StopReason = Literal["cancelled", "terminated"]
 _CALL_DETAILS: TypeAdapter[CodeModeCallDetails] = TypeAdapter(CodeModeCallDetails)
 
 
+def _omitted_marker(omitted: int) -> str:
+    return f"\n... [output truncated, {omitted} characters omitted] ...\n"
+
+
 class StdoutCollector:
     """Collects printed text within a budget; the first `live_chars` are shown live.
 
-    It keeps the first and the last `max_chars` characters and counts the ones in
-    between, so the final text is cut once, in the middle, with an exact count.
+    It keeps the first and the last half of `max_chars` characters and counts the
+    ones in between, so a cut text always says how much it omitted.
     """
 
     def __init__(self, max_chars: int, live_chars: int) -> None:
-        self._max_chars = max_chars
+        self._head_limit = max_chars // 2
+        self._tail_limit = max_chars - self._head_limit
         self._live_limit = live_chars
         self._head: list[str] = []
         self._head_chars = 0
@@ -135,7 +144,7 @@ class StdoutCollector:
     def write(self, text: str) -> str:
         """Collect `text`; returns the part to show live."""
         live = self._live(text)
-        head = text[: max(0, self._max_chars - self._head_chars)]
+        head = text[: max(0, self._head_limit - self._head_chars)]
         if head:
             self._head.append(head)
             self._head_chars += len(head)
@@ -147,7 +156,7 @@ class StdoutCollector:
         return live
 
     def _trim_tail(self) -> None:
-        excess = self._tail_chars - self._max_chars
+        excess = self._tail_chars - self._tail_limit
         while excess > 0:
             first = self._tail[0]
             if len(first) <= excess:
@@ -172,22 +181,31 @@ class StdoutCollector:
 
     @property
     def dropped(self) -> int:
-        """Characters cut from the middle of `text`."""
+        """Characters the collector dropped from the middle."""
         return self._dropped
 
     @property
     def text(self) -> str:
-        return self.cut(self._max_chars)
+        return self.cut(self._head_limit + self._tail_limit)
 
     def cut(self, max_chars: int) -> str:
-        """The collected text cut to `max_chars` in the middle, with the count of
-        all characters cut."""
-        return truncate_output(
-            "".join(self._head) + "".join(self._tail),
-            max_chars,
-            label="code mode stdout",
-            keep_tail=True,
-            elided=self._dropped,
+        """The collected text within `max_chars`, cut in the middle; the marker
+        counts every character omitted, also those the collector dropped."""
+        head = "".join(self._head)
+        tail = "".join(self._tail)
+        if not self._dropped:
+            # Nothing dropped: head and tail are one contiguous text.
+            head, tail = head + tail, ""
+            if len(head) <= max_chars:
+                return head
+            head, tail = head[: len(head) // 2], head[len(head) // 2 :]
+        kept_head = min(max_chars // 2, len(head))
+        kept_tail = min(max_chars - kept_head, len(tail))
+        omitted = self._dropped + len(head) - kept_head + len(tail) - kept_tail
+        return (
+            head[:kept_head]
+            + _omitted_marker(omitted)
+            + (tail[len(tail) - kept_tail :] if kept_tail else "")
         )
 
 
@@ -225,7 +243,11 @@ def durable_details(details: BaseModel | None) -> CodeModeCallDetails | None:
     """
     for kind in CODE_MODE_CALL_DETAIL_TYPES:
         if isinstance(details, kind):
-            return _CALL_DETAILS.validate_python(as_base(details, kind))
+            durable = _CALL_DETAILS.validate_python(as_base(details, kind))
+            if isinstance(durable, CustomToolCallSummary):
+                # Live only: the program receives it; saved results never hold it.
+                durable.structured_result = None
+            return durable
     return None
 
 
@@ -265,7 +287,7 @@ def _bounded_details(
     return details
 
 
-def bounded_call(call: CodeModeCall, max_chars: int) -> CodeModeCall:
+def _bounded_call(call: CodeModeCall, max_chars: int) -> CodeModeCall:
     """The call with its content and large detail text cut to about `max_chars` each."""
     return call.model_copy(
         update={
@@ -275,7 +297,7 @@ def bounded_call(call: CodeModeCall, max_chars: int) -> CodeModeCall:
     )
 
 
-def saved_call_chars(call: CodeModeCall) -> int:
+def _saved_call_chars(call: CodeModeCall) -> int:
     """Characters a call adds to a saved result; documents are saved separately."""
     details = call.details
     detail_chars = (
@@ -327,36 +349,22 @@ def _call_result(
     tool: Tool, invocation: ToolInvocation, context: ToolContext
 ) -> ToolResult:
     outcome = tool.run(invocation, context)
-    if isinstance(outcome, ToolResult):
-        return outcome
-    return ToolResult(
-        content=f"{tool.name} cannot run inside a program. Call it directly instead.",
-        is_error=True,
-    )
+    if not isinstance(outcome, ToolResult):
+        # with_code_mode keeps tools that wait for child runs direct.
+        raise TypeError(f"{tool.name} returned no result inside a program")
+    return outcome
 
 
-def _error(text: str) -> ToolResult:
-    return ToolResult(content=text, is_error=True)
+def _rejected(text: str) -> ToolCallException:
+    return ToolCallException(message=text, llm_facing_message=text)
 
 
-def _cell_results(
-    messages: Sequence[Message],
-) -> list[tuple[ToolResultMessage, CodeModeExecutionResult]]:
-    """Saved observations of cells, with their details."""
-    return [
-        (message, message.details)
-        for message in messages
-        if isinstance(message, ToolResultMessage)
-        and isinstance(message.details, CodeModeExecutionResult)
-    ]
-
-
-def recorded_cell_ids(messages: Sequence[Message]) -> set[int]:
+def _recorded_cell_ids(messages: Sequence[Message]) -> set[int]:
     """Ids of the cells that saved results in `messages`."""
-    return {details.cell_id for _, details in _cell_results(messages)}
+    return {details.cell_id for _, details in code_mode_results(messages)}
 
 
-def closing_amendment(
+def _closing_amendment(
     call_id: str, result: ToolResult, closing: CellClosing
 ) -> ToolResultAmendment:
     """The saved result of a cell's observation, with the cell's closing record."""
@@ -373,17 +381,17 @@ def closing_amendment(
     )
 
 
-def interrupted_amendments(
+def _interrupted_amendments(
     results: Sequence[ToolResultMessage], live_cell_ids: Collection[int]
 ) -> list[ToolResultAmendment]:
     """Closing records for cells of a restored run: their last saved observation
     reports them running, and no live cell continues them."""
     last = {
         details.cell_id: (message, details)
-        for message, details in _cell_results(results)
+        for message, details in code_mode_results(results)
     }
     return [
-        closing_amendment(
+        _closing_amendment(
             message.tool_call_id,
             message,
             CellClosing(reason="interrupted", status="cancelled"),
@@ -407,17 +415,17 @@ class _StoreCommits:
         self._lock = threading.Lock()
         self._commits: list[StoreCommit] = []
 
-    def snapshot(self, recorded_messages: Sequence[Message]) -> StoreSnapshot:
+    def snapshot(self, recorded_results: Sequence[Message]) -> StoreSnapshot:
         with self._lock:
-            return store_snapshot(recorded_messages, self._commits)
+            return store_snapshot(recorded_results, self._commits)
 
     def commit(
-        self, writes: Mapping[str, JsonValue], recorded_messages: Sequence[Message]
+        self, writes: Mapping[str, JsonValue], recorded_results: Sequence[Message]
     ) -> StoreCommit | None:
         with self._lock:
             # Against the store at commit time: another cell may have changed it
             # since this one started.
-            current = store_snapshot(recorded_messages, self._commits)
+            current = store_snapshot(recorded_results, self._commits)
             writes = changed_writes(current.values, writes)
             if not writes:
                 return None
@@ -493,13 +501,15 @@ class CodeCell:
         program: Program,
         citations: CitationAllocator,
         store: _StoreCommits,
-        call_id: str,
+        invocation: ToolInvocation,
+        context: ToolContext,
     ) -> None:
         self.id = cell_id
         self._program = program
         self._citations = citations
         self._store = store
-        self._call_id = call_id
+        # The execute_code call that started the cell; nested call ids use it.
+        self._call_id = invocation.call_id
         self._lock = threading.Lock()
         self._changed = threading.Condition(self._lock)
         # Stops the program and its nested calls: set when the cell is stopped or
@@ -514,12 +524,16 @@ class CodeCell:
         self._stdout = self._collector()
         self._events: list[CellEvent] = []
         self._progress_events = 0
+        # Printed text not yet sent to the attached observer.
+        self._pending_stdout: list[str] = []
+        self._pending_stdout_chars = 0
+        self._flush_timer: threading.Timer | None = None
         # The attached observer. After Stop it stays attached; `close` saves it.
         self._observer: _Observer | None = None
         self._observations = 0
         # Context and messages of the latest observation, for nested calls.
-        self._source: ToolInvocation | None = None
-        self._context = ToolContext()
+        self._source = invocation
+        self._context = context
         self._yielded = False
         self._stop: StopReason | None = None
         # When the first stop was requested; the grace to end counts from it.
@@ -549,17 +563,12 @@ class CodeCell:
             return self._closed
 
     def start(
-        self,
-        invocation: ToolInvocation,
-        context: ToolContext,
-        snapshot: StoreSnapshot,
-        *,
-        yield_seconds: float,
-        max_tokens: int,
+        self, snapshot: StoreSnapshot, *, yield_seconds: float, max_tokens: int
     ) -> ToolResult:
-        """Run the program; returns observation 0."""
+        """Run the program; returns observation 0 to the call that started it."""
         with self._lock:
-            observer = self._attach(invocation, context, max_tokens)
+            invocation = self._source
+            observer = self._attach(invocation, self._context, max_tokens)
         start_thread_future(
             partial(self._drive, snapshot, invocation.cancellation),
             name=f"code-mode-cell-{self.id}",
@@ -578,9 +587,9 @@ class CodeCell:
         """A wait_code observation: new output, the final result, or termination."""
         with self._lock:
             if self._closed:
-                return _error(f"Cell {self.id} already returned its final result.")
+                raise _rejected(f"Cell {self.id} already returned its final result.")
             if self._observer is not None:
-                return _error(f"Cell {self.id} already has an active wait_code call.")
+                raise _rejected(f"Cell {self.id} already has an active wait_code call.")
             observer = self._attach(invocation, context, max_tokens)
         if terminate:
             self.stop("terminated")
@@ -641,7 +650,7 @@ class CodeCell:
                 call_id=taken.call_id, result=self._formatted(taken)
             )
         call_id, result, closing = taken
-        return closing_amendment(call_id, result, closing)
+        return _closing_amendment(call_id, result, closing)
 
     def _closing(self) -> tuple[str, ToolResult, CellClosing] | None:
         """Close the cell: the closing record for its last saved observation, when
@@ -659,7 +668,7 @@ class CodeCell:
                 reason="response_ended",
                 status=self._final_status(),
                 # The model reads only the closing line, not this output.
-                stdout=self._stdout.cut(CHARS_PER_TOKEN * DEFAULT_MAX_OUTPUT_TOKENS),
+                stdout=self._stdout.cut(LIVE_OUTPUT_CHARS),
                 calls=self._window_calls(final=True),
                 commit=self._commit,
                 tool_call_count=len(self._calls),
@@ -738,12 +747,13 @@ class CodeCell:
         """End the observation and start a new window. `final` reports the cell's
         end even when its program has not ended. The caller holds the lock and
         passes the cut to `_formatted`."""
+        self._flush_stdout()
         end = self._end
         status: CodeModeStatus = (
             self._final_status() if final else (self._ended_as or "running")
         )
         budget = observer.max_tokens
-        saved_chars = CHARS_PER_TOKEN * budget
+        saved_chars = APPROX_CHARS_PER_TOKEN * budget
         details = CodeModeExecutionResult(
             cell_id=self.id,
             observation=observer.number,
@@ -779,7 +789,7 @@ class CodeCell:
             saved=saved,
             max_tokens=budget,
             end=end,
-            discarded_writes=self._discarded_writes if end is not None else (),
+            discarded_writes=self._discarded_writes,
             elided_chars=self._stdout.dropped,
         )
         self._window += 1
@@ -829,7 +839,11 @@ class CodeCell:
         if self._closed:
             return
         if self._observer is not None:
-            self._publish(details)
+            if isinstance(details, CodeModeStdout):
+                self._buffer_stdout(details.text)
+            else:
+                self._flush_stdout()
+                self._publish(details)
             return
         events = self._events
         if isinstance(details, CodeModeStdout) and events:
@@ -842,6 +856,35 @@ class CodeCell:
                 return
             self._progress_events += 1
         events.append(details)
+
+    def _buffer_stdout(self, text: str) -> None:
+        self._pending_stdout.append(text)
+        self._pending_stdout_chars += len(text)
+        if self._pending_stdout_chars >= STDOUT_FLUSH_CHARS:
+            self._flush_stdout()
+        elif self._flush_timer is None:
+            self._flush_timer = threading.Timer(
+                STDOUT_FLUSH_SECONDS, self._flush_stdout_later
+            )
+            self._flush_timer.daemon = True
+            self._flush_timer.start()
+
+    def _flush_stdout(self) -> None:
+        """Send the buffered printed text to the attached observer."""
+        if self._flush_timer is not None:
+            self._flush_timer.cancel()
+            self._flush_timer = None
+        if not self._pending_stdout:
+            return
+        text = "".join(self._pending_stdout)
+        self._pending_stdout.clear()
+        self._pending_stdout_chars = 0
+        self._publish(CodeModeStdout(text=text))
+
+    def _flush_stdout_later(self) -> None:
+        with self._lock:
+            self._flush_timer = None
+            self._flush_stdout()
 
     def _send(self, details: CellEvent) -> None:
         with self._lock:
@@ -908,7 +951,7 @@ class CodeCell:
         # Before the end is visible, so the observation that reports it has the
         # commit.
         commit = (
-            self._store.commit(store.writes, source.recorded_messages if source else ())
+            self._store.commit(store.writes, source.recorded_results)
             if end.commits_store
             else None
         )
@@ -976,7 +1019,7 @@ class CodeCell:
         function: ToolFunction,
         started: CodeModeCall,
         context: ToolContext,
-        source: ToolInvocation | None,
+        source: ToolInvocation,
     ) -> object:
         inner_tool = function.tool
         cites = function.result.cites
@@ -1008,10 +1051,8 @@ class CodeCell:
                         details=progress.details,
                     )
                 ),
-                messages=source.messages if source is not None else (),
-                recorded_messages=source.recorded_messages
-                if source is not None
-                else (),
+                messages=source.messages,
+                recorded_results=source.recorded_results,
                 agents=None,
                 trace_metadata={
                     "code_mode.call_id": self._call_id,
@@ -1042,7 +1083,7 @@ class CodeCell:
                 self._citations.release(used)
         # Bounded before the lock; `_record` cuts it further once the cell's
         # budget is spent.
-        ended = bounded_call(
+        ended = _bounded_call(
             started.model_copy(
                 update={
                     "content": result.content,
@@ -1065,8 +1106,8 @@ class CodeCell:
         remaining = MAX_SAVED_EXECUTION_CHARS - self._saved_chars
         limit = min(MAX_SAVED_CALL_CHARS, max(MIN_SAVED_CALL_CHARS, remaining))
         if limit < MAX_SAVED_CALL_CHARS:
-            call = bounded_call(call, limit)
-        self._saved_chars += saved_call_chars(call)
+            call = _bounded_call(call, limit)
+        self._saved_chars += _saved_call_chars(call)
         record = self._calls[call.index]
         record.call = call
         record.ended_in = self._window
@@ -1101,36 +1142,31 @@ class CodeCells:
         """Start `program` as a new cell and return its first observation."""
         with self._lock:
             if self._finished:
-                return _error("The response has ended; no new cell can start.")
+                raise _rejected("The response has ended; no new cell can start.")
             open_ids = sorted(
                 cell_id for cell_id, cell in self._cells.items() if not cell.closed
             )
             if len(open_ids) >= MAX_OPEN_CELLS:
                 names = ", ".join(str(cell_id) for cell_id in open_ids)
-                return _error(
+                raise _rejected(
                     f"At most {MAX_OPEN_CELLS} cells can be open in one response. "
                     f"Open cells: {names}. Get their results with wait_code, or stop "
                     "one with wait_code(cell_id=N, terminate=true)."
                 )
-            history = recorded_cell_ids(invocation.recorded_messages)
+            history = _recorded_cell_ids(invocation.recorded_results)
             cell_id = max(self._highest_id, *history, 0) + 1
             self._highest_id = cell_id
-            snapshot = self._store.snapshot(invocation.recorded_messages)
+            snapshot = self._store.snapshot(invocation.recorded_results)
             cell = CodeCell(
                 cell_id=cell_id,
                 program=program,
                 citations=self._citations,
                 store=self._store,
-                call_id=invocation.call_id,
+                invocation=invocation,
+                context=context,
             )
             self._cells[cell_id] = cell
-        return cell.start(
-            invocation,
-            context,
-            snapshot,
-            yield_seconds=yield_seconds,
-            max_tokens=max_tokens,
-        )
+        return cell.start(snapshot, yield_seconds=yield_seconds, max_tokens=max_tokens)
 
     def wait(
         self,
@@ -1145,12 +1181,12 @@ class CodeCells:
         with self._lock:
             cell = self._cells.get(cell_id)
         if cell is None:
-            if cell_id in recorded_cell_ids(invocation.recorded_messages):
-                return _error(
+            if cell_id in _recorded_cell_ids(invocation.recorded_results):
+                raise _rejected(
                     f"Cell {cell_id} stopped when its response ended. Start a new "
                     "execute_code call."
                 )
-            return _error(f"Cell {cell_id} does not exist.")
+            raise _rejected(f"Cell {cell_id} does not exist.")
         return cell.observe(
             invocation,
             context,
@@ -1189,5 +1225,5 @@ class CodeCells:
                 )
         return [
             *amendments,
-            *interrupted_amendments(results, {cell.id for cell in cells}),
+            *_interrupted_amendments(results, {cell.id for cell in cells}),
         ]

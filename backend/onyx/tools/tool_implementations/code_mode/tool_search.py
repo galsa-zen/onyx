@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 TOOL_SEARCH_FUNCTION = "tool_search"
 TOOL_MATCH_TYPE = "ToolMatch"
+# Names the tool search adds to a program's globals.
+TOOL_SEARCH_NAMES: frozenset[str] = frozenset({TOOL_SEARCH_FUNCTION, TOOL_MATCH_TYPE})
 DEFAULT_TOOL_SEARCH_LIMIT = 8
 MAX_TOOL_SEARCH_LIMIT = 20
 

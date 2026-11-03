@@ -1,7 +1,7 @@
 """The execute_code and wait_code tools: model-written Python programs that call
 other tools, run as cells of the response (code_mode/cells.py)."""
 
-from pydantic import BaseModel, JsonValue
+from pydantic import BaseModel
 
 from onyx.agents.tools import ToolExecutionMode, ToolInvocation
 from onyx.llm.models import ToolDefinition, ToolResult
@@ -49,7 +49,7 @@ class CodeModeArguments(BaseModel):
 class WaitCodeArguments(BaseModel):
     cell_id: int
     yield_time_ms: int = DEFAULT_WAIT_YIELD_MS
-    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     terminate: bool = False
 
 
@@ -64,21 +64,13 @@ def output_tokens(requested: int) -> int:
 _MAX_TOKENS_TEXT = f"Defaults to {DEFAULT_MAX_OUTPUT_TOKENS} tokens."
 
 
-def interrupted_program_result(_arguments: dict[str, JsonValue]) -> ToolResult:
-    """The saved result of an `execute_code` call that stopped before it returned.
-
-    A program's tool calls can have effects, so it never runs twice.
-    """
-    return ToolResult(content=RESTORED_RUNNING_MESSAGE, is_error=True)
-
-
-def interrupted_wait_result(_arguments: dict[str, JsonValue]) -> ToolResult:
-    """The saved result of a `wait_code` call that stopped before it returned.
-
-    The cell's last saved observation keeps reporting it running, so the run's
-    finish adds the closing record there.
-    """
-    return ToolResult(content=RESTORED_WAIT_MESSAGE, is_error=True)
+# The saved result of an `execute_code` call that stopped before it returned. A
+# program's tool calls can have effects, so it never runs twice.
+INTERRUPTED_PROGRAM_RESULT = ToolResult(content=RESTORED_RUNNING_MESSAGE, is_error=True)
+# The saved result of a `wait_code` call that stopped before it returned. The
+# cell's last saved observation keeps reporting it running, so the run's finish
+# adds the closing record there.
+INTERRUPTED_WAIT_RESULT = ToolResult(content=RESTORED_WAIT_MESSAGE, is_error=True)
 
 
 class CodeModeTool(Tool):
@@ -95,7 +87,7 @@ class CodeModeTool(Tool):
     ) -> None:
         self._inner_tools = list(inner_tools)
         self._cells = cells
-        self.interrupted_result = interrupted_program_result
+        self.interrupted_result = INTERRUPTED_PROGRAM_RESULT
         self._limits = limits
         self._stubs = build_tool_stubs(self._inner_tools)
         # Calls to a sequential tool run one at a time, as they do outside programs.
@@ -190,7 +182,7 @@ class WaitCodeTool(Tool):
 
     def __init__(self, cells: CodeCells) -> None:
         self._cells = cells
-        self.interrupted_result = interrupted_wait_result
+        self.interrupted_result = INTERRUPTED_WAIT_RESULT
 
     @property
     def id(self) -> None:
@@ -233,7 +225,7 @@ class WaitCodeTool(Tool):
                         f"returning. Defaults to {DEFAULT_WAIT_YIELD_MS} ms, at most "
                         f"{MAX_WAIT_YIELD_MS} ms.",
                     },
-                    "max_tokens": {
+                    "max_output_tokens": {
                         "type": "integer",
                         "description": "Token budget for the output this call "
                         "returns; longer output is cut in the middle. "
@@ -256,7 +248,7 @@ class WaitCodeTool(Tool):
             invocation,
             context,
             yield_seconds=yield_seconds(arguments.yield_time_ms, MAX_WAIT_YIELD_MS),
-            max_tokens=output_tokens(arguments.max_tokens),
+            max_tokens=output_tokens(arguments.max_output_tokens),
             terminate=arguments.terminate,
         )
 

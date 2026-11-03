@@ -125,9 +125,9 @@ renames MCP tools whose names collide.
 such as arguments, `call_index`, the cancellation signal and the progress
 callback, comes in `agents/tools.py:ToolInvocation`. `invocation.messages` is
 the model's view after compaction, as owned copies without result details
-(`agents/tool_execution.py:_tool_view`); `invocation.recorded_messages` holds every
-recorded message before the call, without compaction: earlier steps, then this
-step's message and its completed results. Use it for state derived from the
+(`agents/tool_execution.py:_tool_view`); `invocation.recorded_results` holds every
+recorded tool result before the call, with details and without compaction:
+earlier steps, then this step's completed results. Tools only read it. Use it for state derived from the
 whole conversation. `invocation.update` can raise `AgentCancelled`; do not catch it. An update sent after `_run` returns is
 dropped, and a result that arrives after the run closes is discarded.
 Per-request data, such as chat files, memory and the next citation number,
