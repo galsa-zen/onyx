@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
-from mcp.types import CallToolResult, TextContent
+from mcp.types import AudioContent, CallToolResult, ImageContent, TextContent
 from pydantic import JsonValue
 
 from onyx.agents.tools import ToolInvocation
@@ -270,6 +270,29 @@ def test_server_error_details_are_encoded_once(
     assert response.is_error
     assert json.loads(response.text) == {"error": expected}
     assert delta.data == {"error": expected}
+
+
+@pytest.mark.parametrize(
+    "media",
+    [
+        ImageContent(type="image", mimeType="image/png", data="aGVsbG8="),
+        AudioContent(type="audio", mimeType="audio/wav", data="aGVsbG8="),
+    ],
+)
+@pytest.mark.parametrize("structured", [False, True])
+def test_media_does_not_change_json_tool_result(
+    media: ImageContent | AudioContent, structured: bool
+) -> None:
+    payload = {"answer": 42}
+    result = CallToolResult(content=[media])
+    if structured:
+        result.structuredContent = payload
+    else:
+        result.content.append(TextContent(type="text", text=json.dumps(payload)))
+    response, delta = _run_with_server_result(result)
+    expected = {"tool_result": payload}
+    assert json.loads(response.text) == expected
+    assert delta.data == expected
 
 
 def test_cancelled_call_has_separate_metric_and_propagates() -> None:
