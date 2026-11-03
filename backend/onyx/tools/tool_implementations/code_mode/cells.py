@@ -244,9 +244,13 @@ def durable_details(details: BaseModel | None) -> CodeModeCallDetails | None:
     for kind in CODE_MODE_CALL_DETAIL_TYPES:
         if isinstance(details, kind):
             durable = _CALL_DETAILS.validate_python(as_base(details, kind))
-            if isinstance(durable, CustomToolCallSummary):
+            if (
+                isinstance(durable, CustomToolCallSummary)
+                and durable.structured_result is not None
+            ):
                 # Live only: the program receives it; saved results never hold it.
-                durable.structured_result = None
+                # A copy, since validation can return the live details.
+                return durable.model_copy(update={"structured_result": None})
             return durable
     return None
 
