@@ -112,8 +112,6 @@ class DeepResearchAgent(Agent, RestorableFeature):
         agent_id: str | None = None,
     ) -> None:
         self.application_tools = allowed_tools
-        # The tools restored and child agents receive.
-        self.configured_tools = allowed_tools
         self.token_counter = token_counter
         self.user_identity = user_identity
         self.language_section = language_section
@@ -170,6 +168,12 @@ class DeepResearchAgent(Agent, RestorableFeature):
                 flow=LLMFlow.DEEP_RESEARCH, user_identity=user_identity
             ),
         )
+
+    @property
+    def configured_tools(self) -> list[Tool]:
+        """The tools restored and child agents receive: deep research offers its
+        tools unchanged."""
+        return self.application_tools
 
     def capture_state(self) -> DeepResearchFeatureState:
         with self._citation_lock:

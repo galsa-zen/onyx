@@ -49,8 +49,9 @@ FILE_ASSOCIATED_GUIDANCE = (
 )
 
 
-# Search-like tool results as the model and code mode programs read them. The
-# code mode stubs declare these classes from their source.
+# Search-like tool results as the model and code mode programs read them
+# (convert_inference_sections_to_llm_string). The code mode stubs declare these
+# classes from their source.
 class SearchResult(TypedDict):
     document: int
     """Citation number. Cite it in the answer as [n]."""
@@ -114,7 +115,7 @@ def convert_inference_sections_to_llm_string(
             current_citation_id += 1
 
     # Second pass: build results with citation_ids assigned per document
-    results: list[SearchResult] = []
+    results = []
 
     for section in top_sections:
         chunk = section.center_chunk
@@ -135,22 +136,10 @@ def convert_inference_sections_to_llm_string(
         if chunk.updated_at:
             updated_at_str = chunk.updated_at.isoformat()
 
-        if chunk.file_id is not None:
-            filename = sandbox_filename_for_document(
-                chunk.semantic_identifier, chunk.file_id
-            )
-            content = FILE_ASSOCIATED_GUIDANCE.format(
-                filename=filename, content=chunk.content
-            )
-        else:
-            filename = None
-            content = section.combined_content
-
         # Build result dictionary in desired order, only including non-None/empty fields
-        result: SearchResult = {
+        result = {
             "document": citation_id,
             "title": chunk.semantic_identifier,
-            "content": content,
         }
         if updated_at_str is not None:
             result["updated_at"] = updated_at_str
@@ -168,13 +157,23 @@ def convert_inference_sections_to_llm_string(
                 result["url"] = link
         if include_document_id:
             result["document_identifier"] = chunk.document_id
-        if filename is not None:
+        if chunk.file_id is not None:
+            filename = sandbox_filename_for_document(
+                chunk.semantic_identifier, chunk.file_id
+            )
             result["file_name"] = filename
+
+            result["content"] = FILE_ASSOCIATED_GUIDANCE.format(
+                filename=filename, content=chunk.content
+            )
+        else:
+            result["content"] = section.combined_content
         if chunk.metadata:
             result["metadata"] = json.dumps(chunk.metadata, ensure_ascii=False)
         results.append(result)
 
-    payload: SearchResults = {"results": results}
+    payload: dict[str, object] = {}
+    payload["results"] = results
     if note:
         payload["note"] = note
 

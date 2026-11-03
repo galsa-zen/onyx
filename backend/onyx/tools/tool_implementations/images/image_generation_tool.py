@@ -59,7 +59,7 @@ REFERENCE_IMAGE_FILE_IDS_FIELD = "reference_image_file_ids"
 
 class ImageGenerationTool(Tool):
     NAME = "generate_image"
-    DESCRIPTION = "Generate an image based on a prompt. Do not use unless the user specifically requests an image. The image is shown to the user automatically."
+    DESCRIPTION = "Generate an image based on a prompt. Do not use unless the user specifically requests an image."
     DISPLAY_NAME = "Image Generation"
 
     def __init__(
