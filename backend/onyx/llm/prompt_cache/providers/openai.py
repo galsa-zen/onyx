@@ -1,16 +1,15 @@
 """OpenAI provider adapter for prompt caching.
 
-Requests to GPT-5.6+ models also carry explicit prompt_cache_breakpoints on
-every tool result (`mark_tool_results`), applied when the request is built.
+Requests to GPT-5.6+ models on the OpenAI API also carry explicit
+prompt_cache_breakpoints on every tool result (`explicit_cache_breakpoints`).
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from functools import lru_cache
 
 from pydantic import JsonValue
 
-from onyx.llm.constants import LlmProviderNames
-from onyx.llm.interfaces import LLMConfig
+from onyx.configs.model_configs import ENABLE_PROMPT_CACHING
 from onyx.llm.model_request import (
     ChatCompletionMessage,
     ResponsesInputText,
@@ -20,34 +19,37 @@ from onyx.llm.prompt_cache.models import CacheMetadata
 from onyx.llm.prompt_cache.providers.base import PromptCacheProvider
 from onyx.llm.prompt_cache.utils import prepare_messages_with_cacheable_transform
 
-PROMPT_CACHE_BREAKPOINT: dict[str, JsonValue] = {"mode": "explicit"}
-PROMPT_CACHE_OPTIONS: dict[str, JsonValue] = {"mode": "explicit"}
+# Both the breakpoint on a tool result and the request's prompt_cache_options.
+EXPLICIT_CACHE_MODE: dict[str, JsonValue] = {"mode": "explicit"}
 
 
-def uses_openai_explicit_cache_breakpoint(llm_config: LLMConfig) -> bool:
-    """Whether requests for this model carry explicit prompt_cache_breakpoints."""
-    if llm_config.model_provider != LlmProviderNames.OPENAI:
+def uses_explicit_cache_breakpoints(
+    model_names: Iterable[str], api_base: str | None
+) -> bool:
+    """Whether requests for this model carry explicit breakpoints: prompt caching
+    is on, the model supports them, and the request goes to the OpenAI API."""
+    if not ENABLE_PROMPT_CACHING:
         return False
-    return _supports_breakpoint(llm_config.deployment_name, llm_config.model_name)
+    from litellm.integrations.anthropic_cache_control_hook import targets_openai_api
+
+    return _supports_breakpoint(tuple(model_names)) and targets_openai_api(api_base)
 
 
 @lru_cache(maxsize=256)
-def _supports_breakpoint(deployment_name: str | None, model_name: str) -> bool:
+def _supports_breakpoint(model_names: tuple[str, ...]) -> bool:
     from litellm.integrations.anthropic_cache_control_hook import (
         supports_openai_prompt_cache_breakpoint,
     )
 
-    return any(
-        supports_openai_prompt_cache_breakpoint(name)
-        for name in (deployment_name, model_name)
-        if name
-    )
+    return any(supports_openai_prompt_cache_breakpoint(name) for name in model_names)
 
 
-def mark_tool_results(
+def explicit_cache_breakpoints(
     messages: Sequence[ChatCompletionMessage],
-) -> Sequence[ChatCompletionMessage]:
-    """Mark every tool result in the request with an explicit breakpoint.
+) -> tuple[list[ChatCompletionMessage], dict[str, JsonValue] | None]:
+    """The messages with every tool result marked with an explicit breakpoint,
+    and the request's prompt_cache_options; None before the first tool result,
+    so that request keeps implicit caching.
 
     A breakpoint is part of the cached prefix, so an entry is reused only if
     the same message still carries the marker. Marking each tool result
@@ -55,9 +57,10 @@ def mark_tool_results(
     Only tool output can carry the marker through LiteLLM: user content must
     be chat-completions ``text`` (whose extra keys the bridge drops), system
     messages become ``instructions``, and assistant output does not accept
-    one. Before the first tool result, implicit caching applies.
+    one.
     """
     result = list(messages)
+    marked = False
     for index, message in enumerate(result):
         if not isinstance(message, ToolMessage):
             continue
@@ -70,21 +73,13 @@ def mark_tool_results(
             update={
                 "content": [
                     ResponsesInputText(
-                        text=text, prompt_cache_breakpoint=PROMPT_CACHE_BREAKPOINT
+                        text=text, prompt_cache_breakpoint=EXPLICIT_CACHE_MODE
                     )
                 ]
             }
         )
-    return result
-
-
-def has_prompt_cache_breakpoint(messages: Sequence[ChatCompletionMessage]) -> bool:
-    return any(
-        isinstance(message, ToolMessage)
-        and not isinstance(message.content, str)
-        and any(part.prompt_cache_breakpoint for part in message.content)
-        for message in messages
-    )
+        marked = True
+    return result, EXPLICIT_CACHE_MODE if marked else None
 
 
 class OpenAIPromptCacheProvider(PromptCacheProvider):

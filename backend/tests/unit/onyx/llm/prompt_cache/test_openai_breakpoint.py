@@ -1,6 +1,5 @@
-"""Requests to GPT-5.6+ OpenAI models mark every tool result with an explicit
-prompt_cache_breakpoint and send prompt_cache_options, with chat-history
-caching off (the default)."""
+"""Requests to GPT-5.6+ models on the OpenAI API mark every tool result with an
+explicit prompt_cache_breakpoint and send prompt_cache_options."""
 
 from collections.abc import Mapping
 from typing import Any
@@ -26,33 +25,40 @@ _RESPONSE = LiteLLMModelResponse(
         {"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}
     ],
 )
+_RESULTS = [f"Evidence {index}" for index in range(6)]
 
 
 def _turn() -> list[Message]:
+    messages: list[Message] = [UserMessage(content="Question")]
+    for index, text in enumerate(_RESULTS):
+        call_id = f"c{index}"
+        messages += [
+            AssistantMessage(
+                content=[ToolCall(id=call_id, name="internal_search", arguments={})]
+            ),
+            ToolResultMessage(
+                content=text, tool_call_id=call_id, tool_name="internal_search"
+            ),
+        ]
     return [
-        UserMessage(content="Question"),
-        AssistantMessage(
-            content=[ToolCall(id="c1", name="internal_search", arguments={})]
-        ),
-        ToolResultMessage(
-            content="Evidence", tool_call_id="c1", tool_name="internal_search"
-        ),
-        AssistantMessage(
-            content=[ToolCall(id="c2", name="internal_search", arguments={})]
-        ),
-        ToolResultMessage(
-            content="More evidence", tool_call_id="c2", tool_name="internal_search"
-        ),
+        *messages,
         UserMessage(content="<system-reminder>Cite sources.</system-reminder>"),
     ]
 
 
-def _sent(provider: str, model: str, messages: list[Message]) -> Mapping[str, Any]:
+def _sent(
+    provider: str,
+    model: str,
+    messages: list[Message],
+    *,
+    api_base: str | None = None,
+) -> Mapping[str, Any]:
     client = get_llm(
         provider=provider,
         model=model,
         deployment_name=None,
         max_input_tokens=100_000,
+        api_base=api_base,
     )
     with (
         patch("onyx.llm.multi_llm._env_injection_enabled", return_value=False),
@@ -66,7 +72,7 @@ def _tool_contents(sent: Mapping[str, Any]) -> list[Any]:
     return [m["content"] for m in sent["messages"] if m["role"] == "tool"]
 
 
-def test_marks_every_tool_result_without_history_caching() -> None:
+def test_marks_every_tool_result() -> None:
     sent = _sent("openai", "gpt-5.6-luna", _turn())
     assert _tool_contents(sent) == [
         [
@@ -76,7 +82,7 @@ def test_marks_every_tool_result_without_history_caching() -> None:
                 "prompt_cache_breakpoint": {"mode": "explicit"},
             }
         ]
-        for text in ("Evidence", "More evidence")
+        for text in _RESULTS
     ]
     assert sent["prompt_cache_options"] == {"mode": "explicit"}
     # The moving reminder itself stays plain text.
@@ -86,10 +92,27 @@ def test_marks_every_tool_result_without_history_caching() -> None:
 
 
 @pytest.mark.parametrize(
-    ("provider", "model"), [("openai", "gpt-4.1"), ("anthropic", "claude-sonnet-5")]
+    ("provider", "model", "api_base"),
+    [
+        ("openai", "gpt-4.1", None),
+        ("anthropic", "claude-sonnet-5", None),
+        # An OpenAI-compatible server may reject the extra keys.
+        ("openai", "gpt-5.6-luna", "https://proxy.example.com/v1"),
+    ],
 )
-def test_other_models_keep_plain_tool_results(provider: str, model: str) -> None:
-    sent = _sent(provider, model, _turn())
+def test_other_requests_keep_plain_tool_results(
+    provider: str, model: str, api_base: str | None
+) -> None:
+    sent = _sent(provider, model, _turn(), api_base=api_base)
+    assert all(isinstance(content, str) for content in _tool_contents(sent))
+    assert "prompt_cache_options" not in sent
+
+
+def test_disabled_prompt_caching_keeps_plain_tool_results() -> None:
+    with patch(
+        "onyx.llm.prompt_cache.providers.openai.ENABLE_PROMPT_CACHING", False
+    ):
+        sent = _sent("openai", "gpt-5.6-luna", _turn())
     assert all(isinstance(content, str) for content in _tool_contents(sent))
     assert "prompt_cache_options" not in sent
 
