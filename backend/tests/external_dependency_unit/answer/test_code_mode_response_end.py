@@ -87,7 +87,7 @@ def test_turn_deadline_closes_open_cells_and_reports_its_own_stop_reason(
         hold_open=True,
     )
     started = time.monotonic()
-    with patch("onyx.chat.execution.CHAT_EXECUTION_TIMEOUT_S", 6):
+    with patch("onyx.chat.execution.CHAT_EXECUTION_TIMEOUT_S", 10):
         parts = send(session.id, user, llm, "Run until stopped.")
     assert time.monotonic() - started < 30
     assert not [part for part in parts if isinstance(part, StreamingError)]

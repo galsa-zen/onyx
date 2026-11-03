@@ -16,6 +16,7 @@ import pytest
 import uvicorn
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from mcp.types import ImageContent, TextContent
 from sqlalchemy.orm import Session
 
 from onyx.cache.factory import get_cache_backend
@@ -58,7 +59,6 @@ from tests.external_dependency_unit.code_mode_helpers import (
     ChatLLM,
     assert_cells_released,
     code_mode_shape,
-    code_mode_threads,
     code_step,
     final_deltas,
     last_tool_text,
@@ -106,7 +106,8 @@ def signals() -> Generator[ServerSignals, None, None]:
 
 @pytest.fixture(scope="module")
 def mcp_server_url() -> Generator[str, None, None]:
-    """A FastMCP server with `hello`, `slow` and `deny` tools, served in this process."""
+    """A FastMCP server with `hello`, `slow`, `chart` and `deny` tools, served in
+    this process."""
     mcp = FastMCP("Code mode test server")
 
     @mcp.tool
@@ -124,6 +125,14 @@ def mcp_server_url() -> Generator[str, None, None]:
                 break
             await asyncio.sleep(0.05)
         return f"Slowly, {name}!"
+
+    @mcp.tool
+    def chart(name: str) -> list[TextContent | ImageContent]:
+        """Return a caption with an image."""
+        return [
+            TextContent(type="text", text=f"Chart for {name}"),
+            ImageContent(type="image", mimeType="image/png", data="aGVsbG8="),
+        ]
 
     @mcp.tool
     def deny(name: str) -> str:
@@ -841,11 +850,17 @@ def test_an_unobserved_commit_after_a_later_one_keeps_the_live_store(
         db_session=db_session,
     )
 
+    # Threads that earlier tests left; this response waits only for its own.
+    earlier_threads = set(threading.enumerate())
+
     def after_cell_1_completes() -> None:
         # Cell 2 committed `k` in step 1; cell 1 commits it after, unobserved.
         signals.slow_release.set()
         deadline = time.monotonic() + 30
-        while code_mode_threads():
+        while any(
+            thread.name.startswith("code-mode-") and thread not in earlier_threads
+            for thread in threading.enumerate()
+        ):
             assert time.monotonic() < deadline
             time.sleep(0.05)
 
@@ -972,6 +987,57 @@ def test_a_server_reported_tool_error_reaches_the_program_and_the_model(
         ("acme__deny", "error")
     ]
     assert direct_call.result is not None and direct_call.result.is_error
+
+
+def test_mcp_media_results_reach_the_model_as_their_text(
+    db_session: Session,
+    make_test_user: MakeTestUser,
+    mcp_server_url: str,
+) -> None:
+    user = make_test_user("code_mode_mcp_media_user")
+    persona = _persona_with_mcp_tool(
+        db_session, user, mcp_server_url, tool_names=("chart",)
+    )
+    chat_session = create_chat_session_from_request(
+        chat_session_request=ChatSessionCreationRequest(persona_id=persona.id),
+        user=user,
+        db_session=db_session,
+    )
+    program = ChatLLM(
+        [
+            code_step("code", "print(await acme__chart(name='q2'))\n"),
+            Delta(content="Charted."),
+        ]
+    )
+    assert final_answer(send(chat_session.id, user, program, "Chart it.")) == (
+        "Charted."
+    )
+    in_program = last_tool_text(program, "code")
+    assert "Chart for q2" in in_program
+    assert "omitted" not in in_program
+
+    direct = ChatLLM(
+        [
+            Delta(
+                tool_calls=[
+                    ChatCompletionDeltaToolCall(
+                        id="direct",
+                        index=0,
+                        function=ResponseFunctionCall(
+                            name="chart", arguments=json.dumps({"name": "q3"})
+                        ),
+                    )
+                ]
+            ),
+            Delta(content="Charted again."),
+        ]
+    )
+    assert final_answer(
+        send(chat_session.id, user, direct, "Chart directly.", code_mode=False)
+    ) == ("Charted again.")
+    direct_text = last_tool_text(direct, "direct")
+    assert "Chart for q3" in direct_text
+    assert "omitted" not in direct_text
 
 
 def test_a_program_finds_a_deferred_mcp_function_with_tool_search(

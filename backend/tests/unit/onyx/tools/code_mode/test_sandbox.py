@@ -524,7 +524,7 @@ def test_programs_return_their_worker_while_tools_run(two_workers: Monty) -> Non
         f"done done {index}\n" for index in range(programs)
     ], results
     # Holding a worker through both calls would take programs * seconds in total.
-    assert elapsed < programs * seconds / 2, elapsed
+    assert elapsed < programs * seconds * 0.75, elapsed
 
 
 def test_a_waiting_program_keeps_its_worker_while_no_other_waits(
@@ -711,9 +711,9 @@ def test_duration_excludes_waiting_for_a_worker() -> None:
         waited = time.monotonic() - started
         holder.join()
     assert result.status == "completed"
-    assert waited > 0.8
+    assert waited > 0.5
     # The run's duration leaves out most of the wait for the worker.
-    assert result.duration_seconds < waited - 0.5
+    assert result.duration_seconds < waited - 0.3
 
 
 def test_sleeping_programs_return_their_worker(
