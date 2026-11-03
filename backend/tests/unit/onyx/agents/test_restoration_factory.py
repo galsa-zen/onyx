@@ -1,6 +1,7 @@
 """Rebuild feature configuration and resources without replacing saved conversation state."""
 
 import pytest
+from pydantic import JsonValue
 
 from onyx.agents.models import (
     AgentState,
@@ -187,74 +188,11 @@ def _offered(llm: ScriptedLLM) -> tuple[list[str], ToolChoiceOptions]:
     ]
 
 
-def test_saved_chat_state_with_extra_fields_restores_and_offers_tools() -> None:
-    llm = ScriptedLLM([Delta(content="done")])
-    original = ChatAgent(
+def _chat_agent(llm: ScriptedLLM, *, code_mode: bool = False) -> ChatAgent:
+    return ChatAgent(
         messages=[],
         tools=[EchoTool()],
-        custom_agent_prompt=None,
-        base_system_prompt="Base instructions",
-        context_files=ExtractedContextFiles(
-            file_texts=[],
-            image_files=[],
-            use_as_search_filter=False,
-            total_token_count=0,
-            file_metadata=[],
-            uncapped_token_count=None,
-        ),
-        persona=None,
-        user_memory_context=None,
-        llm=llm,
-        token_counter=len,
-        agent_id="retained-agent",
-    )
-    # Saved rows can hold fields that the feature state does not define.
-    state = {**original.capture_state().model_dump(mode="json"), "ran_image_gen": True}
-    checkpoint = ExecutionCheckpoint(
-        agent_state=original.state,
-        run_state=RunState(
-            run_id="suspended-run",
-            agent_id=original.id,
-            status=RunStatus.SUSPENDED,
-            steps=[],
-            progress=RunProgress(step_limit=3, feature_state=state),
-        ),
-    )
-    rebuilt = restore_chat_agent(
-        checkpoint, llm=llm, tools=[EchoTool()], user_identity=None
-    )
-    assert isinstance(rebuilt, ChatAgent)
-    rebuilt.restore_state(state)
-    run_agent(rebuilt, max_steps=3, messages=[UserMessage(content="Go")])
-    assert _offered(llm) == ([EchoTool().name], ToolChoiceOptions.AUTO)
-
-
-@pytest.mark.parametrize(
-    ("saved_code_mode", "saved_key", "offered", "choice"),
-    [
-        # Code mode ignores the forced tool.
-        (True, True, [CodeModeTool.NAME, WAIT_CODE_TOOL_NAME], ToolChoiceOptions.AUTO),
-        (False, True, [EchoTool().name], ToolChoiceOptions.REQUIRED),
-        # A saved state without the field restores without code mode.
-        (False, False, [EchoTool().name], ToolChoiceOptions.REQUIRED),
-    ],
-)
-def test_restored_chat_keeps_the_saved_code_mode(
-    monkeypatch: pytest.MonkeyPatch,
-    saved_code_mode: bool,
-    saved_key: bool,
-    offered: list[str],
-    choice: ToolChoiceOptions,
-) -> None:
-    # The deployment setting can change between the save and the restore.
-    monkeypatch.setattr(
-        "onyx.configs.chat_configs.CODE_MODE_ENABLED", not saved_code_mode
-    )
-    llm = ScriptedLLM([Delta(content="done")])
-    original = ChatAgent(
-        messages=[],
-        tools=[EchoTool()],
-        code_mode=saved_code_mode,
+        code_mode=code_mode,
         custom_agent_prompt=None,
         base_system_prompt="Base instructions",
         context_files=ExtractedContextFiles(
@@ -272,21 +210,59 @@ def test_restored_chat_keeps_the_saved_code_mode(
         forced_tool_id=EchoTool().id,
         agent_id="retained-agent",
     )
-    state = original.capture_state().model_dump(mode="json")
-    if not saved_key:
-        del state["code_mode"]
-    checkpoint = ExecutionCheckpoint(
-        agent_state=original.state,
+
+
+def _suspended(agent: ChatAgent, state: dict[str, JsonValue]) -> ExecutionCheckpoint:
+    return ExecutionCheckpoint(
+        agent_state=agent.state,
         run_state=RunState(
             run_id="suspended-run",
-            agent_id=original.id,
+            agent_id=agent.id,
             status=RunStatus.SUSPENDED,
             steps=[],
             progress=RunProgress(step_limit=3, feature_state=state),
         ),
     )
+
+
+def test_saved_chat_state_with_extra_fields_restores_and_offers_tools() -> None:
+    llm = ScriptedLLM([Delta(content="done")])
+    original = _chat_agent(llm)
+    # Saved rows can hold fields that the feature state does not define.
+    state = {**original.capture_state().model_dump(mode="json"), "ran_image_gen": True}
     rebuilt = restore_chat_agent(
-        checkpoint, llm=llm, tools=[EchoTool()], user_identity=None
+        _suspended(original, state), llm=llm, tools=[EchoTool()], user_identity=None
+    )
+    assert isinstance(rebuilt, ChatAgent)
+    rebuilt.restore_state(state)
+    run_agent(rebuilt, max_steps=3, messages=[UserMessage(content="Go")])
+    assert _offered(llm) == ([EchoTool().name], ToolChoiceOptions.REQUIRED)
+
+
+@pytest.mark.parametrize(
+    ("saved_code_mode", "saved_key", "offered", "choice"),
+    [
+        # Code mode ignores the forced tool.
+        (True, True, [CodeModeTool.NAME, WAIT_CODE_TOOL_NAME], ToolChoiceOptions.AUTO),
+        (False, True, [EchoTool().name], ToolChoiceOptions.REQUIRED),
+        # A saved state without the field restores without code mode.
+        (False, False, [EchoTool().name], ToolChoiceOptions.REQUIRED),
+    ],
+)
+def test_restored_chat_keeps_the_saved_code_mode(
+    saved_code_mode: bool,
+    saved_key: bool,
+    offered: list[str],
+    choice: ToolChoiceOptions,
+) -> None:
+    # Restoration reads only the saved state, never the deployment setting.
+    llm = ScriptedLLM([Delta(content="done")])
+    original = _chat_agent(llm, code_mode=saved_code_mode)
+    state = original.capture_state().model_dump(mode="json")
+    if not saved_key:
+        del state["code_mode"]
+    rebuilt = restore_chat_agent(
+        _suspended(original, state), llm=llm, tools=[EchoTool()], user_identity=None
     )
     assert isinstance(rebuilt, ChatAgent)
     # A restored run starts with no live cells; nothing from the lost owner replays.

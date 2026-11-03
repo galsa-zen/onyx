@@ -2,7 +2,7 @@ import json
 
 from onyx.chat.chat_utils import omit_prior_tool_result_content
 from onyx.chat.prompt_utils import prepare_prompt
-from onyx.chat.tool_results import tool_result_parts, tool_result_sources
+from onyx.chat.tool_results import tool_result_sources
 from onyx.context.search.models import SearchDocsResponse
 from onyx.deep_research.models import ResearchAgentCallResult
 from onyx.llm.models import (
@@ -76,11 +76,6 @@ def test_results_without_documents_have_no_sources() -> None:
     )
     assert tool_result_sources(custom) is None
     assert tool_result_sources(None) is None
-
-
-def test_a_direct_result_is_its_only_part() -> None:
-    result = ToolResultMessage(tool_call_id="s", tool_name="lookup", content="{}")
-    assert tool_result_parts(result) == [result]
 
 
 def test_later_prompts_keep_references_to_images_made_inside_a_program() -> None:

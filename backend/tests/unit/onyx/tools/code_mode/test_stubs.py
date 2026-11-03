@@ -23,7 +23,11 @@ from onyx.tools.tool_implementations.images.image_generation_tool import (
     ImageGenerationTool,
 )
 from onyx.tools.tool_implementations.python.python_tool import PythonTool
-from tests.unit.onyx.tools.code_mode.fakes import FakeTool, FakeWebSearchTool
+from tests.unit.onyx.tools.code_mode.fakes import (
+    FakeMCPTool,
+    FakeTool,
+    FakeWebSearchTool,
+)
 
 
 def _unused(*_: object) -> ToolResult:
@@ -253,3 +257,28 @@ def test_tool_search_ranks_name_matches_first_and_bounds_the_count() -> None:
     assert index.tool_search("weather") == []
     with pytest.raises(TypeError):
         index.tool_search(1)
+
+
+def test_mcp_output_schema_types_the_result() -> None:
+    tool = FakeMCPTool(
+        "list-tickets",
+        _unused,
+        {
+            "type": "object",
+            "properties": {"service": {"type": "string"}},
+            "required": ["service"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {
+                "tickets": {"type": "array", "items": {"type": "object"}},
+                "next_page": {"type": "string"},
+            },
+            "required": ["tickets"],
+        },
+    )
+    function = build_tool_stubs([tool]).functions["acme__list_tickets"]
+    declarations = "\n".join(function.declarations)
+    assert "class AcmeListTicketsResult(TypedDict):" in declarations
+    assert "next_page: NotRequired[str]" in declarations
+    assert "-> AcmeListTicketsResult:" in function.stub

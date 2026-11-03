@@ -1,6 +1,7 @@
 """Fake tools for code mode tests."""
 
 import json
+import time
 from collections.abc import Callable
 from datetime import datetime
 
@@ -170,3 +171,26 @@ class FakeMCPTool(MCPTool):
         outcome = self._run_function(invocation, context)
         assert isinstance(outcome, ToolResult)
         return outcome
+
+
+def echo(invocation: ToolInvocation, _context: ToolContext) -> ToolOutcome:
+    """A tool that returns its `value` argument as `{"echo": value}`."""
+    return ToolResult(content=f'{{"echo": "{invocation.arguments["value"]}"}}')
+
+
+def search(invocation: ToolInvocation, context: ToolContext) -> ToolOutcome:
+    """A search tool that finds two documents for each query."""
+    queries = invocation.arguments["queries"]
+    assert isinstance(queries, list)
+    return search_result(
+        [f"{query}-{n}" for query in queries for n in range(2)],
+        context.next_citation_num,
+    )
+
+
+def until(condition: Callable[[], bool], timeout: float = 10.0) -> None:
+    """Wait for `condition`; fails the test after `timeout` seconds."""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "the condition did not hold in time"
+        time.sleep(0.01)

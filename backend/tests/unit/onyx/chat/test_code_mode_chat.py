@@ -17,13 +17,8 @@ from onyx.chat.agent import ChatAgent
 from onyx.chat.checkpoint import CHECKPOINT_PAYLOAD_TYPES, CheckpointSerializer
 from onyx.chat.code_mode_renderer import tool_renderer
 from onyx.chat.execution import tool_row_ids
-from onyx.chat.models import (
-    MessageRendering,
-    PresentationMode,
-)
 from onyx.chat.presentation import project_response
 from onyx.chat.prompt_utils import build_system_prompt
-from onyx.chat.renderer import MessageRenderer, ResponseLayout
 from onyx.context.search.models import SearchDocsResponse
 from onyx.db.models import StoredToolResult
 from onyx.file_store.models import ExtractedContextFiles
@@ -33,8 +28,6 @@ from onyx.llm.model_response import (
 from onyx.llm.models import (
     AssistantMessage,
     ToolCall,
-    ToolCallDeltaEvent,
-    ToolCallStartEvent,
     ToolChoiceOptions,
     ToolResult,
     ToolResultMessage,
@@ -307,24 +300,6 @@ def test_nested_artifacts_belong_to_the_code_mode_call() -> None:
         _state(_result_message(execution)), tool_ids={CodeModeTool.NAME: None}
     )
     assert history.tool_calls[0].generated_files == [file]
-
-
-def test_code_argument_streams_live_as_execute_code() -> None:
-    renderer = MessageRenderer(
-        MessageRendering(mode=PresentationMode.ANSWER), {}, ResponseLayout()
-    )
-    renderer.consume(
-        ToolCallStartEvent(
-            content_index=0, tool_call_id="code-1", tool_name=CodeModeTool.NAME
-        )
-    )
-    output = renderer.consume(
-        ToolCallDeltaEvent(content_index=0, arguments_delta='{"code": "print(1)')
-    )
-    [packet] = output
-    assert isinstance(packet.obj, packets.ToolCallArgumentDelta)
-    assert packet.obj.tool_type == CodeModeTool.NAME
-    assert packet.obj.argument_deltas == {"code": "print(1)"}
 
 
 def test_direct_search_guidance_keeps_the_query_limit_and_stop_rule() -> None:

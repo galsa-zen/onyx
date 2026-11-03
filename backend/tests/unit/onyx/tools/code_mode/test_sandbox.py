@@ -30,6 +30,7 @@ from onyx.tools.tool_implementations.code_mode.store import (
     ProgramStore,
     StoreSnapshot,
 )
+from tests.unit.onyx.tools.code_mode.fakes import until
 
 STUBS = f"""from typing import Any, TypedDict
 
@@ -948,10 +949,7 @@ def test_a_call_that_outlives_its_program_keeps_its_thread_until_it_returns(
     # The unawaited call still holds the only thread.
     assert not threads.acquire(lambda: None)
     release.set()
-    deadline = time.monotonic() + 5
-    while not threads.acquire(lambda: None):
-        assert time.monotonic() < deadline
-        time.sleep(0.01)
+    until(lambda: threads.acquire(lambda: None))
 
 
 def test_programs_waiting_for_threads_share_them_equally() -> None:

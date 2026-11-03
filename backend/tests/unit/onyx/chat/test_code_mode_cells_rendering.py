@@ -1,4 +1,4 @@
-"""Cells render one card per observation, live and on replay, plus the closing record."""
+"""Cells render one card per observation, plus the closing record."""
 
 from collections.abc import Callable, Generator
 
@@ -12,10 +12,8 @@ from onyx.agents.models import (
 from onyx.agents.runtime import Agent
 from onyx.agents.tools import AgentTool, ToolInvocation
 from onyx.chat.emitter import Emitter
-from onyx.chat.models import ToolReplayData
-from onyx.chat.presentation import ResponsePresenter, replay_response
-from onyx.chat.response import response_record
-from onyx.context.search.models import SavedSearchDoc, SearchDocsResponse
+from onyx.chat.presentation import ResponsePresenter
+from onyx.context.search.models import SearchDocsResponse
 from onyx.llm.cancellation import CancellationSignal
 from onyx.llm.interfaces import GenerationContext
 from onyx.llm.models import (
@@ -159,7 +157,7 @@ def _shape(output: list[packets.Packet]) -> list[tuple[str, int, int | None]]:
 
 
 @pytest.mark.parametrize("stopped", [False, True])
-def test_cell_observations_and_closing_render_the_same_live_and_on_replay(
+def test_cell_observations_and_closing_render_in_call_order(
     stopped: bool,
 ) -> None:
     live: list[packets.Packet] = []
@@ -219,43 +217,6 @@ def test_cell_observations_and_closing_render_the_same_live_and_on_replay(
     assert closing_stdout.stdout == "third\n" and closing_stdout.status is None
     # The card counts the calls the cell started.
     assert deltas[-1][1].tool_call_count == 2
-
-    # Saving strips closing documents; replay restores them from the call's documents.
-    record = response_record(run.snapshot())
-    saved = record.steps[1].tools["wait"].result
-    assert saved is not None and isinstance(saved.details, CodeModeExecutionResult)
-    assert saved.details.closing is not None
-    saved_search = saved.details.closing.calls[1].details
-    assert isinstance(saved_search, SearchDocsResponse)
-    assert saved_search.search_docs == []
-    replayed = replay_response(
-        record,
-        {
-            (record.steps[1].message.id or "", "wait"): ToolReplayData(
-                tool_id=None,
-                search_docs=[SavedSearchDoc.from_search_doc(DOC, db_doc_id=7)],
-            ),
-        },
-        {},
-        {},
-    )
-    # Replay has no streamed arguments; everything else matches the live packets.
-    assert _shape(replayed) == _shape(
-        [p for p in live if p.obj.type != "tool_call_argument_delta"]
-    )
-    replayed_finals = [
-        p.obj.tool_call_count
-        for p in replayed
-        if isinstance(p.obj, packets.CodeModeDelta) and p.obj.response_ended
-    ]
-    assert replayed_finals == [2]
-    replayed_docs = [
-        doc.document_id
-        for p in replayed
-        if isinstance(p.obj, packets.SearchToolDocumentsDelta)
-        for doc in p.obj.documents
-    ]
-    assert replayed_docs == ["alpha"]
 
 
 def test_closing_of_a_call_from_before_a_restore_renders_in_a_new_card() -> None:

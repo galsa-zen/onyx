@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable, Sequence
 
 import pytest
-from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+from prometheus_client import REGISTRY
 from pydantic import BaseModel, JsonValue
 
 from onyx.agents.tools import (
@@ -17,7 +17,6 @@ from onyx.agents.tools import (
 from onyx.context.search.models import SearchDocsResponse
 from onyx.llm.cancellation import CancellationSignal
 from onyx.llm.models import Message, ToolResult, ToolResultMessage
-from onyx.server.metrics import code_mode as code_mode_metrics
 from onyx.tools.models import ToolContext
 from onyx.tools.tool_implementations.code_mode import cells as cells_module
 from onyx.tools.tool_implementations.code_mode.cells import (
@@ -44,28 +43,10 @@ from tests.unit.onyx.tools.code_mode.fakes import (
     LIMITS,
     FakeTool,
     FakeWebSearchTool,
-    search_result,
+    echo,
+    search,
+    until,
 )
-
-
-def _echo(invocation: ToolInvocation, _context: ToolContext) -> ToolOutcome:
-    return ToolResult(content=f'{{"echo": "{invocation.arguments["value"]}"}}')
-
-
-def _search(invocation: ToolInvocation, context: ToolContext) -> ToolOutcome:
-    queries = invocation.arguments["queries"]
-    assert isinstance(queries, list)
-    return search_result(
-        [f"{query}-{n}" for query in queries for n in range(2)],
-        context.next_citation_num,
-    )
-
-
-def _until(condition: Callable[[], bool], timeout: float = 10.0) -> None:
-    deadline = time.monotonic() + timeout
-    while not condition():
-        assert time.monotonic() < deadline, "the condition did not hold in time"
-        time.sleep(0.01)
 
 
 class Response:
@@ -84,10 +65,10 @@ class Response:
 
         self.execute = CodeModeTool(
             [
-                FakeTool("echo", _echo),
+                FakeTool("echo", echo),
                 FakeTool("gate", gate),
                 FakeTool("seq", gate, execution_mode=ToolExecutionMode.SEQUENTIAL),
-                FakeWebSearchTool(_search),
+                FakeWebSearchTool(search),
             ],
             cells=self.cells,
             limits=limits,
@@ -252,7 +233,7 @@ def test_events_between_observations_go_to_the_next_one() -> None:
     [running] = _details(first).calls
     assert (running.index, running.state, running.is_error) == (0, "running", False)
     response.gate.set()
-    _until(lambda: response.ended(1))
+    until(lambda: response.ended(1))
     final = _details(response.wait(1))
     assert [(call.index, call.state) for call in final.calls] == [(0, "ok"), (1, "ok")]
     events = response.last_events()
@@ -298,7 +279,7 @@ def test_one_active_wait_per_cell() -> None:
     response.run("import asyncio\nyield_control()\nawait asyncio.sleep(30)\n")
     waiting = threading.Thread(target=lambda: response.wait(1, yield_time_ms=1_000))
     waiting.start()
-    _until(lambda: response.cell(1)._observer is not None)
+    until(lambda: response.cell(1)._observer is not None)
     busy = response.wait(1)
     assert busy.is_error
     assert busy.content == "Cell 1 already has an active wait_code call."
@@ -357,7 +338,7 @@ def test_commits_follow_completion_order_and_saved_records_fold_to_the_same_stor
 ):
     response = Response()
     response.run("yield_control()\nstore('k', 'a')\nstore('only_a', 1)\n")
-    _until(lambda: response.ended(1))
+    until(lambda: response.ended(1))
     # A completed without an observer; a later program sees its commit at once.
     assert _details(response.run("load('only_a')\n")).result == "1"
     b = _details(response.run("store('k', 'b')\n")).commit
@@ -418,7 +399,7 @@ def test_closing_record_lists_what_ran_after_the_last_observation() -> None:
         "import asyncio\nyield_control()\nawait echo(value='x')\nprint('after')\n"
         "store('done', True)\n"
     )
-    _until(lambda: response.ended(1))
+    until(lambda: response.ended(1))
     amendments = response.finish()
     amended = amendments["call_1"]
     details = _details(amended)
@@ -499,12 +480,12 @@ def test_a_call_waiting_for_a_sequential_tool_stops_with_its_cell() -> None:
         "import asyncio\nyield_control()\n"
         "await asyncio.gather(seq(value='a'), seq(value='b'))\n"
     )
-    _until(lambda: len(response.cell(1)._calls) == 2)
+    until(lambda: len(response.cell(1)._calls) == 2)
     assert _details(response.wait(1, terminate=True)).status == "terminated"
     # The call that holds the lock ignores cancellation; the waiting one returns.
-    _until(lambda: len(response.cell(1).running_calls()) == 1, timeout=3)
+    until(lambda: len(response.cell(1).running_calls()) == 1, timeout=3)
     response.gate.set()
-    _until(lambda: not response.cell(1).running_calls())
+    until(lambda: not response.cell(1).running_calls())
 
 
 def test_citations_do_not_collide_across_observations() -> None:
@@ -557,34 +538,29 @@ def test_restored_running_observation_is_amended_as_interrupted() -> None:
     )
 
 
-@pytest.fixture
-def capacity_metrics(monkeypatch: pytest.MonkeyPatch) -> CollectorRegistry:
-    """The code mode metrics on a fresh registry, so the test reads only its own
-    program."""
-    registry = CollectorRegistry()
-    for name, metric in vars(code_mode_metrics).items():
-        if isinstance(metric, (Counter, Gauge, Histogram)):
-            # The metric's class and settings, on the test registry.
-            fresh = type(metric)(
-                metric._name,
-                metric._documentation,
-                metric._labelnames,
-                registry=registry,
-                **(
-                    {"buckets": metric._upper_bounds}
-                    if isinstance(metric, Histogram)
-                    else {}
-                ),
-            )
-            monkeypatch.setattr(code_mode_metrics, name, fresh)
-    return registry
+_CAPACITY_SAMPLES: tuple[tuple[str, dict[str, str]], ...] = (
+    ("onyx_code_mode_cells_running", {}),
+    ("onyx_code_mode_sandbox_workers_busy", {}),
+    ("onyx_code_mode_tool_call_threads_in_use", {}),
+    ("onyx_code_mode_programs_waiting_for_worker", {}),
+    ("onyx_code_mode_programs_total", {"status": "completed"}),
+    ("onyx_code_mode_program_duration_seconds_count", {}),
+    ("onyx_code_mode_program_start_duration_seconds_count", {}),
+)
 
 
-def test_capacity_metrics_follow_one_program(
-    capacity_metrics: CollectorRegistry,
-) -> None:
-    def value(name: str, **labels: str) -> float | None:
-        return capacity_metrics.get_sample_value(name, labels)
+def _samples() -> dict[str, float]:
+    return {
+        name: REGISTRY.get_sample_value(name, labels) or 0.0
+        for name, labels in _CAPACITY_SAMPLES
+    }
+
+
+def test_capacity_metrics_follow_one_program() -> None:
+    before = _samples()
+
+    def delta(name: str) -> float:
+        return _samples()[name] - before[name]
 
     response = Response()
     running = response.run(
@@ -592,16 +568,16 @@ def test_capacity_metrics_follow_one_program(
     )
     assert _details(running).status == "running"
     # A lone waiting program keeps its worker; its call holds a thread.
-    assert value("onyx_code_mode_cells_running") == 1
-    assert value("onyx_code_mode_sandbox_workers_busy") == 1
-    assert value("onyx_code_mode_tool_call_threads_in_use") == 1
+    assert delta("onyx_code_mode_cells_running") == 1
+    assert delta("onyx_code_mode_sandbox_workers_busy") == 1
+    assert delta("onyx_code_mode_tool_call_threads_in_use") == 1
 
     response.gate.set()
     assert _details(response.wait(1, yield_time_ms=30_000)).status == "completed"
-    _until(lambda: value("onyx_code_mode_cells_running") == 0)
-    assert value("onyx_code_mode_programs_total", status="completed") == 1
-    assert value("onyx_code_mode_program_duration_seconds_count") == 1
-    assert value("onyx_code_mode_program_start_duration_seconds_count") == 1
-    assert value("onyx_code_mode_sandbox_workers_busy") == 0
-    assert value("onyx_code_mode_tool_call_threads_in_use") == 0
-    assert value("onyx_code_mode_programs_waiting_for_worker") == 0
+    until(lambda: delta("onyx_code_mode_cells_running") == 0)
+    assert delta("onyx_code_mode_programs_total") == 1
+    assert delta("onyx_code_mode_program_duration_seconds_count") == 1
+    assert delta("onyx_code_mode_program_start_duration_seconds_count") == 1
+    assert delta("onyx_code_mode_sandbox_workers_busy") == 0
+    assert delta("onyx_code_mode_tool_call_threads_in_use") == 0
+    assert delta("onyx_code_mode_programs_waiting_for_worker") == 0

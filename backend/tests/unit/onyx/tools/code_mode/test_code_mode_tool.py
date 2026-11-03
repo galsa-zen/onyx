@@ -2,7 +2,6 @@ import json
 import re
 import threading
 import time
-from collections.abc import Sequence
 
 import pytest
 from pydantic import BaseModel, JsonValue
@@ -22,7 +21,7 @@ from onyx.llm.cancellation import (
     CancellationSignal,
     current_cancellation,
 )
-from onyx.llm.models import Message, ToolResult, ToolResultMessage
+from onyx.llm.models import ToolResult
 from onyx.tools.interface import CITATIONS_PER_TOOL_CALL
 from onyx.tools.models import CustomToolCallSummary, ToolContext
 from onyx.tools.tool_implementations.code_mode import cells
@@ -50,7 +49,10 @@ from tests.unit.onyx.tools.code_mode.fakes import (
     FakeMCPTool,
     FakeTool,
     FakeWebSearchTool,
+    echo,
+    search,
     search_result,
+    until,
 )
 from tests.unit.onyx.tracing.capture import CaptureProcessor
 
@@ -68,16 +70,7 @@ def _sources(details: CodeModeExecutionResult) -> ResultSources:
 def _web_search(invocation: ToolInvocation, context: ToolContext) -> ToolOutcome:
     invocation.update(ToolProgress(details=Progress(step="searching")))
     time.sleep(0.3)
-    queries = invocation.arguments["queries"]
-    assert isinstance(queries, list)
-    return search_result(
-        [f"{query}-{n}" for query in queries for n in range(2)],
-        context.next_citation_num,
-    )
-
-
-def _echo(invocation: ToolInvocation, _context: ToolContext) -> ToolOutcome:
-    return ToolResult(content=f'{{"echo": "{invocation.arguments["value"]}"}}')
+    return search(invocation, context)
 
 
 def _broken(_invocation: ToolInvocation, _context: ToolContext) -> ToolOutcome:
@@ -86,28 +79,21 @@ def _broken(_invocation: ToolInvocation, _context: ToolContext) -> ToolOutcome:
 
 def _make_tool(*tools: FakeTool | FakeWebSearchTool | FakeMCPTool) -> CodeModeTool:
     return CodeModeTool(
-        [FakeWebSearchTool(_web_search), FakeTool("echo", _echo), *tools],
+        [FakeWebSearchTool(_web_search), FakeTool("echo", echo), *tools],
         cells=CodeCells(),
         limits=LIMITS,
     )
 
 
 class Invocation:
-    def __init__(
-        self, code: str, call_id: str = "call_1", messages: Sequence[Message] = ()
-    ) -> None:
+    def __init__(self, code: str) -> None:
         self.events: list[BaseModel] = []
         self.cancellation = CancellationSignal()
-        # Without compaction the model sees every recorded message.
         self.invocation = ToolInvocation(
-            call_id=call_id,
+            call_id="call_1",
             arguments={"code": code},
             cancellation=self.cancellation,
             update=self._update,
-            messages=messages,
-            recorded_results=[
-                m for m in messages if isinstance(m, ToolResultMessage)
-            ],
         )
 
     def _update(self, progress: ToolProgress) -> None:
@@ -119,11 +105,8 @@ def _run(
     tool: CodeModeTool,
     code: str,
     context: ToolContext | None = None,
-    *,
-    call_id: str = "call_1",
-    messages: Sequence[Message] = (),
 ) -> tuple[ToolResult, CodeModeExecutionResult, list[BaseModel]]:
-    invocation = Invocation(code, call_id, messages)
+    invocation = Invocation(code)
     outcome = tool.run(invocation.invocation, context or ToolContext())
     assert isinstance(outcome, ToolResult)
     assert isinstance(outcome.details, CodeModeExecutionResult)
@@ -336,16 +319,6 @@ def test_cancellation_stops_calls_and_raises() -> None:
     assert isinstance(invocation.events[-1], CodeModeCallFinished)
 
 
-def _result_message(call_id: str, result: ToolResult) -> ToolResultMessage:
-    return ToolResultMessage(
-        tool_call_id=call_id,
-        tool_name="execute_code",
-        content=result.content,
-        details=result.details,
-        is_error=result.is_error,
-    )
-
-
 def test_output_is_cut_to_the_token_budget_in_the_middle() -> None:
     invocation = Invocation("for i in range(500):\n    print('line', i)\n")
     invocation.invocation.arguments["max_output_tokens"] = 200
@@ -388,12 +361,11 @@ def test_cell_and_nested_tool_spans_carry_code_mode_attributes() -> None:
                 "import asyncio\n"
                 "await asyncio.gather(echo(value='a'), echo(value='b'))\n",
             )
-            deadline = time.monotonic() + 10
-            while not any(
-                s.span_data.name == CELL_SPAN_NAME for s in capture.ended_spans
-            ):
-                assert time.monotonic() < deadline
-                time.sleep(0.01)
+            until(
+                lambda: any(
+                    s.span_data.name == CELL_SPAN_NAME for s in capture.ended_spans
+                )
+            )
     finally:
         set_trace_processors([])
     spans = [
@@ -494,48 +466,6 @@ _TICKET_PARAMETERS: dict[str, JsonValue] = {
     "properties": {"service": {"type": "string"}},
     "required": ["service"],
 }
-
-
-_TICKETS_SCHEMA: dict[str, JsonValue] = {
-    "type": "object",
-    "properties": {
-        "tickets": {"type": "array", "items": {"type": "object"}},
-        "next_page": {"type": "string"},
-    },
-    "required": ["tickets"],
-}
-
-
-def test_mcp_functions_are_deferred_and_found_with_tool_search() -> None:
-    tool = _make_tool(
-        FakeMCPTool(
-            "list-tickets",
-            _list_tickets,
-            _TICKET_PARAMETERS,
-            output_schema=_TICKETS_SCHEMA,
-        )
-    )
-    description = tool.tool_definition().description
-    assert "acme__list_tickets" not in description
-    assert "the MCP server `acme`" in description
-    assert "def tool_search(" in description
-
-    result, details, _ = _run(
-        tool,
-        "[match] = tool_search('open tickets')\n"
-        "print(match['name'])\n"
-        "print(match['stub'])\n"
-        "r = await acme__list_tickets(service='auth')\n"
-        "print(r['tickets'][0]['service'])\n",
-    )
-    assert not result.is_error, result.content
-    assert "Output:\nacme__list_tickets\n" in result.content
-    # The stub types the result from the server's output schema.
-    assert "class AcmeListTicketsResult(TypedDict):" in result.content
-    assert "next_page: NotRequired[str]" in result.content
-    assert "-> AcmeListTicketsResult:" in result.content
-    assert result.content.rstrip().endswith("auth") or "\nauth\n" in result.content
-    assert details.calls[0].tool_name == "list-tickets"
 
 
 def test_without_deferred_functions_there_is_no_tool_search() -> None:
@@ -660,7 +590,7 @@ def test_timeout_stops_nested_work_and_marks_it_unfinished() -> None:
             finished.set()
 
     tool = CodeModeTool(
-        [FakeTool("echo", _echo), FakeTool("waits", waits)],
+        [FakeTool("echo", echo), FakeTool("waits", waits)],
         cells=CodeCells(),
         limits=SHORT_LIMITS,
     )
@@ -684,7 +614,7 @@ def test_unawaited_calls_are_cancelled_and_reported() -> None:
             finished.set()
 
     tool = CodeModeTool(
-        [FakeTool("echo", _echo), FakeTool("waits", waits)],
+        [FakeTool("echo", echo), FakeTool("waits", waits)],
         cells=CodeCells(),
         limits=LIMITS,
     )
