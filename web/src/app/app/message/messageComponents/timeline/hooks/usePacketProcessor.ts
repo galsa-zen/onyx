@@ -18,7 +18,6 @@ import {
 } from "@/app/app/message/messageComponents/timeline/hooks/packetProcessor";
 import {
   expandCodeModeSteps,
-  isCodeModeWorking,
   transformPacketGroups,
   groupStepsByTurn,
   TurnGroup,
@@ -123,11 +122,10 @@ export function usePacketProcessor(
 
   // Transform toolGroups to timeline format
   const { toolTurnGroups, codeModeWorking } = useMemo(() => {
-    const steps = transformPacketGroups(state.toolGroups);
-    return {
-      toolTurnGroups: groupStepsByTurn(expandCodeModeSteps(steps)),
-      codeModeWorking: isCodeModeWorking(steps),
-    };
+    const { steps, codeModeWorking } = expandCodeModeSteps(
+      transformPacketGroups(state.toolGroups)
+    );
+    return { toolTurnGroups: groupStepsByTurn(steps), codeModeWorking };
   }, [state.toolGroups]);
 
   // Callback reads from ref: always current value, no ref needed in component

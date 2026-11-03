@@ -28,8 +28,8 @@ import {
   isCodeModePacket,
   isGroupEndPacket,
   isNestedPacket,
-  NestedCallGroup,
-  nestedCallGroups,
+  NestedCall,
+  nestedCallSnapshot,
 } from "@/app/app/message/messageComponents/timeline/packetHelpers";
 
 // Re-export parseToolKey for consumers that import from this module
@@ -56,6 +56,9 @@ export interface ProcessorState {
   // Nested calls of each group by sub_turn_index, placed at parent level once
   // per packet
   nestedCallsMap: Map<string, Map<number, Packet[]>>;
+  // The last nested-call list built for each group; unchanged calls keep their
+  // objects across batches
+  nestedCallSnapshots: Map<string, NestedCall[]>;
   seenGroupKeys: Set<string>;
   groupKeysWithSectionEnd: Set<string>;
 
@@ -85,7 +88,7 @@ export interface GroupedPacket {
   tab_index: number;
   packets: Packet[];
   /** The tool calls nested under this group, ordered by sub_turn_index. */
-  nestedCalls: NestedCallGroup[];
+  nestedCalls: NestedCall[];
 }
 
 // ============================================================================
@@ -102,6 +105,7 @@ export function createInitialState(nodeId: number): ProcessorState {
     documentMap: new Map(),
     groupedPacketsMap: new Map(),
     nestedCallsMap: new Map(),
+    nestedCallSnapshots: new Map(),
     seenGroupKeys: new Set(),
     groupKeysWithSectionEnd: new Set(),
     toolGroupKeys: new Set(),
@@ -253,7 +257,7 @@ function handleImagePacket(state: ProcessorState, packet: Packet): void {
   const delta = packet.obj;
   const seenFileIds = new Set(state.generatedImages.map((i) => i.file_id));
   const newImages: GeneratedImage[] = [];
-  for (const image of delta.images ?? []) {
+  for (const image of delta.images) {
     if (seenFileIds.has(image.file_id)) continue;
     seenFileIds.add(image.file_id);
     newImages.push(image);
@@ -335,7 +339,8 @@ function addPacketToGroup(
 
   const subTurnIndex = packet.placement.sub_turn_index;
   if (subTurnIndex === undefined || subTurnIndex === null) return;
-  const calls = state.nestedCallsMap.get(groupKey) ?? new Map();
+  const calls =
+    state.nestedCallsMap.get(groupKey) ?? new Map<number, Packet[]>();
   state.nestedCallsMap.set(groupKey, calls);
   const call = calls.get(subTurnIndex) ?? [];
   call.push(asStandalonePacket(packet));
@@ -427,6 +432,15 @@ export function processPackets(
   return state;
 }
 
+function nestedCalls(state: ProcessorState, key: string): NestedCall[] {
+  const calls = nestedCallSnapshot(
+    state.nestedCallsMap.get(key) ?? new Map<number, Packet[]>(),
+    state.nestedCallSnapshots.get(key)
+  );
+  state.nestedCallSnapshots.set(key, calls);
+  return calls;
+}
+
 /**
  * Build GroupedPacket array from a set of group keys.
  * Filters to only include groups with meaningful content and sorts by turn/tab index.
@@ -482,9 +496,7 @@ function buildGroupsFromKeys(
             turn_index,
             tab_index,
             packets: [...packets],
-            nestedCalls: nestedCallGroups(
-              state.nestedCallsMap.get(key) ?? new Map()
-            ),
+            nestedCalls: nestedCalls(state, key),
           }
         : null;
     })

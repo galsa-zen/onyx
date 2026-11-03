@@ -1,14 +1,17 @@
 import {
   expandCodeModeSteps,
   groupStepsByTurn,
-  isCodeModeWorking,
   transformPacketGroups,
 } from "@/app/app/message/messageComponents/timeline/transformers";
 import {
   createInitialState,
   processPackets,
 } from "@/app/app/message/messageComponents/timeline/hooks/packetProcessor";
-import { Packet, PacketType } from "@/app/app/services/streamingModels";
+import {
+  CODE_MODE_TOOL_TYPE,
+  Packet,
+  PacketType,
+} from "@/app/app/services/streamingModels";
 
 function at(turn: number, tab = 0, sub?: number) {
   return { turn_index: turn, tab_index: tab, sub_turn_index: sub };
@@ -75,7 +78,7 @@ function stepsOf(packets: Packet[]) {
 }
 
 function expand(packets: Packet[]) {
-  return groupStepsByTurn(expandCodeModeSteps(stepsOf(packets)));
+  return groupStepsByTurn(expandCodeModeSteps(stepsOf(packets)).steps);
 }
 
 test("each call of a program is its own step, without the program", () => {
@@ -130,12 +133,62 @@ test("a program without calls has no step", () => {
 });
 
 test("a program works between calls until it returns", () => {
-  const working = (packets: Packet[]) => isCodeModeWorking(stepsOf(packets));
+  const working = (packets: Packet[]) =>
+    expandCodeModeSteps(stepsOf(packets)).codeModeWorking;
 
   expect(working(observation(0, 1, []))).toBe(true);
   expect(working(observation(0, 1, search(0, 0, false)))).toBe(false);
   expect(working(observation(0, 1, search(0, 0, true)))).toBe(true);
   expect(working(observation(0, 1, [], "completed"))).toBe(false);
+  // A call carried from an earlier observation is still running.
+  expect(
+    working([
+      ...observation(0, 1, search(0, 0, false), "running"),
+      ...observation(1, 1, []),
+    ])
+  ).toBe(false);
+  // The model is still writing the program.
+  expect(
+    working([
+      {
+        placement: at(0),
+        obj: {
+          type: PacketType.TOOL_CALL_ARGUMENT_DELTA,
+          tool_type: CODE_MODE_TOOL_TYPE,
+          tool_id: "call-1",
+          argument_deltas: { code: "x = 1" },
+        },
+      } as Packet,
+    ])
+  ).toBe(false);
+  // A program with a direct sibling after it in the same turn.
+  expect(
+    working([
+      ...observation(0, 1, search(0, 0, true)),
+      ...search(0, 0, true).map((p) => ({ ...p, placement: at(0, 1) })),
+    ])
+  ).toBe(true);
+});
+
+test("steps keep their keys and objects when an earlier cell gains a call", () => {
+  const first = [
+    ...observation(0, 1, search(0, 0, true)),
+    ...search(0, 0, true).map((p) => ({ ...p, placement: at(0, 1) })),
+  ];
+  let state = processPackets(createInitialState(0), first);
+  const before = expandCodeModeSteps(
+    transformPacketGroups(state.toolGroups)
+  ).steps;
+  state = processPackets(state, [...first, ...search(0, 1, true)]);
+  const after = expandCodeModeSteps(
+    transformPacketGroups(state.toolGroups)
+  ).steps;
+
+  expect(before.map((s) => s.key)).toEqual(["0-0-0", "0-1"]);
+  // The new call sits with its cell, so the direct step moves; its key does not.
+  expect(after.map((s) => s.key)).toEqual(["0-0-0", "0-0-1", "0-1"]);
+  // The unchanged call keeps its step object, so memoized renderers skip it.
+  expect(after[0]).toBe(before[0]);
 });
 
 test("direct parallel calls keep their shared turn", () => {

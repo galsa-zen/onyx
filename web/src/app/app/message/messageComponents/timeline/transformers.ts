@@ -4,7 +4,7 @@ import {
   isCodeModePackets,
   isGroupEndPacket,
   isNestedPacket,
-  NestedCallGroup,
+  NestedCall,
 } from "./packetHelpers";
 
 /**
@@ -22,7 +22,7 @@ export interface TransformedStep {
   /** Raw packets for content rendering */
   packets: GroupedPacket["packets"];
   /** Tool calls nested under the step, ordered by sub_turn_index */
-  nestedCalls: NestedCallGroup[];
+  nestedCalls: NestedCall[];
 }
 
 /**
@@ -138,6 +138,54 @@ function codeModeCellId(step: TransformedStep): number | null {
   return null;
 }
 
+/** Whether the program of a code mode step has started running; before that
+ * the model is still writing it. */
+function programStarted(step: TransformedStep): boolean {
+  return step.packets.some(
+    (packet) =>
+      !isNestedPacket(packet) && packet.obj.type === PacketType.CODE_MODE_START
+  );
+}
+
+export interface CodeModeTimeline {
+  steps: TransformedStep[];
+  /** A program is running between tool calls: it has started, has not
+   * returned, and none of its cell's calls is in flight. The program has no
+   * step of its own, so only the timeline header shows this. */
+  codeModeWorking: boolean;
+}
+
+// Steps built for nested calls, reused while the call object, key and
+// position are unchanged, so memoized step renderers skip them.
+const callSteps = new WeakMap<NestedCall, TransformedStep>();
+
+function callStep(
+  call: NestedCall,
+  key: string,
+  groupKey: string,
+  turnIndex: number
+): TransformedStep {
+  const cached = callSteps.get(call);
+  if (
+    cached &&
+    cached.key === key &&
+    cached.groupKey === groupKey &&
+    cached.turnIndex === turnIndex
+  ) {
+    return cached;
+  }
+  const step: TransformedStep = {
+    key,
+    groupKey,
+    turnIndex,
+    tabIndex: 0,
+    packets: call.packets,
+    nestedCalls: [],
+  };
+  callSteps.set(call, step);
+  return step;
+}
+
 /**
  * Shows code mode as the tool calls it makes. Each nested call of a program
  * becomes its own step, as a direct call would; the program itself has no
@@ -148,13 +196,19 @@ function codeModeCellId(step: TransformedStep): number | null {
  */
 export function expandCodeModeSteps(
   steps: TransformedStep[]
-): TransformedStep[] {
+): CodeModeTimeline {
   const out: TransformedStep[] = [];
-  // Where each call's step sits in `out`, and the turn index it got first.
-  const slotByKey = new Map<string, { index: number; turnIndex: number }>();
+  // Where each call's step sits in `out`, the turn index it got first, its
+  // cell, and whether its latest report has ended.
+  const slotByKey = new Map<
+    string,
+    { index: number; turnIndex: number; cellKey: string; complete: boolean }
+  >();
   const directTurns = new Map<number, number>();
   // The key of each cell's first step; the keys of its calls derive from it.
   const cellKeys = new Map<number, string>();
+  // Cell keys of observations whose program is running.
+  const runningCells = new Set<string>();
   let nextTurn = 0;
 
   for (const step of steps) {
@@ -164,7 +218,7 @@ export function expandCodeModeSteps(
         turn = nextTurn++;
         directTurns.set(step.turnIndex, turn);
       }
-      out.push({ ...step, turnIndex: turn });
+      out.push(turn === step.turnIndex ? step : { ...step, turnIndex: turn });
       continue;
     }
 
@@ -172,38 +226,34 @@ export function expandCodeModeSteps(
     const cellKey =
       (cellId === null ? undefined : cellKeys.get(cellId)) ?? step.key;
     if (cellId !== null) cellKeys.set(cellId, cellKey);
+    if (programStarted(step) && !step.packets.some(isGroupEndPacket)) {
+      runningCells.add(cellKey);
+    } else {
+      runningCells.delete(cellKey);
+    }
 
     for (const call of step.nestedCalls) {
       const key = `${cellKey}-${call.subTurnIndex}`;
       const slot = slotByKey.get(key);
-      const callStep = {
-        key,
-        groupKey: step.groupKey,
-        tabIndex: 0,
-        packets: call.packets,
-        nestedCalls: [],
-      };
       if (slot === undefined) {
         const turnIndex = nextTurn++;
-        slotByKey.set(key, { index: out.length, turnIndex });
-        out.push({ ...callStep, turnIndex });
+        slotByKey.set(key, {
+          index: out.length,
+          turnIndex,
+          cellKey,
+          complete: call.complete,
+        });
+        out.push(callStep(call, key, step.groupKey, turnIndex));
       } else {
-        out[slot.index] = { ...callStep, turnIndex: slot.turnIndex };
+        slot.complete = call.complete;
+        out[slot.index] = callStep(call, key, step.groupKey, slot.turnIndex);
       }
     }
   }
 
-  return out;
-}
-
-/**
- * Whether a code mode program is working between tool calls: the latest step
- * is a program that has not returned and has no call in flight. The program
- * has no step of its own, so only the timeline header shows this.
- */
-export function isCodeModeWorking(steps: TransformedStep[]): boolean {
-  const last = steps.at(-1);
-  if (!last || !isCodeModePackets(last.packets)) return false;
-  if (last.packets.some(isGroupEndPacket)) return false;
-  return last.nestedCalls.every((call) => call.complete);
+  const slots = Array.from(slotByKey.values());
+  const codeModeWorking = Array.from(runningCells).some((cellKey) =>
+    slots.every((slot) => slot.cellKey !== cellKey || slot.complete)
+  );
+  return { steps: out, codeModeWorking };
 }

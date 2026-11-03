@@ -32,7 +32,7 @@ import {
   isGroupEndPacket,
   isNestedPacket,
   NestedCall,
-  nestedCallGroups,
+  nestedCallSnapshot,
 } from "@/chat/timeline/packetHelpers";
 import { parseToolKey } from "@/chat/timeline/toolDisplay";
 
@@ -49,6 +49,8 @@ export interface ProcessedMessageState {
   groupedPacketsMap: Map<string, Packet[]>;
   // Nested calls of each group by sub_turn_index, placed at parent level once per packet
   nestedCallsMap: Map<string, Map<number, Packet[]>>;
+  // The last nested-call list built for each group; unchanged calls keep their objects.
+  nestedCallSnapshots: Map<string, NestedCall[]>;
   seenGroupKeys: Set<string>;
   groupKeysWithSectionEnd: Set<string>;
   toolGroupKeys: Set<string>;
@@ -85,6 +87,7 @@ export function createInitialState(nodeId: number): ProcessedMessageState {
     documentMap: new Map(),
     groupedPacketsMap: new Map(),
     nestedCallsMap: new Map(),
+    nestedCallSnapshots: new Map(),
     seenGroupKeys: new Set(),
     groupKeysWithSectionEnd: new Set(),
     toolGroupKeys: new Set(),
@@ -315,7 +318,8 @@ function addPacketToGroup(
 
   const subTurnIndex = packet.placement.sub_turn_index;
   if (subTurnIndex === undefined || subTurnIndex === null) return;
-  const calls = state.nestedCallsMap.get(groupKey) ?? new Map();
+  const calls =
+    state.nestedCallsMap.get(groupKey) ?? new Map<number, Packet[]>();
   state.nestedCallsMap.set(groupKey, calls);
   const call = calls.get(subTurnIndex) ?? [];
   call.push(asStandalonePacket(packet));
@@ -337,13 +341,17 @@ function processPacket(state: ProcessedMessageState, packet: Packet): void {
     state.groupKeysWithSectionEnd.add(groupKey);
   }
 
-  const isFirstPacket = !state.groupedPacketsMap.get(groupKey);
   addPacketToGroup(state, packet, groupKey);
 
-  const opensToolGroup = isFirstPacket && isToolPacket(packet, false);
-  if (isFirstPacket) {
-    if (opensToolGroup) {
+  // Debug and control packets can precede the first rendered packet.
+  let opensToolGroup = false;
+  if (
+    !state.toolGroupKeys.has(groupKey) &&
+    !state.displayGroupKeys.has(groupKey)
+  ) {
+    if (isToolPacket(packet, false)) {
       state.toolGroupKeys.add(groupKey);
+      opensToolGroup = true;
     }
     if (isDisplayPacket(packet)) {
       state.displayGroupKeys.add(groupKey);
@@ -397,6 +405,15 @@ export function processPackets(
 
 // Spread packets to force a new array ref (change detection); keep only content groups; sort by
 // turn then tab.
+function nestedCalls(state: ProcessedMessageState, key: string): NestedCall[] {
+  const calls = nestedCallSnapshot(
+    state.nestedCallsMap.get(key) ?? new Map<number, Packet[]>(),
+    state.nestedCallSnapshots.get(key),
+  );
+  state.nestedCallSnapshots.set(key, calls);
+  return calls;
+}
+
 function buildGroupsFromKeys(
   state: ProcessedMessageState,
   keys: Set<string>,
@@ -410,9 +427,7 @@ function buildGroupsFromKeys(
             turn_index,
             tab_index,
             packets: [...packets],
-            nestedCalls: nestedCallGroups(
-              state.nestedCallsMap.get(key) ?? new Map(),
-            ),
+            nestedCalls: nestedCalls(state, key),
           }
         : null;
     })

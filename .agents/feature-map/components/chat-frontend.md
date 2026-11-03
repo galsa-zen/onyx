@@ -162,10 +162,8 @@ and their `SECTION_END` or `ERROR` does not close it. A nested `MESSAGE_START`
 does not start the answer. Every step-kind check in that file, and
 `findRenderer`, reads only parent-level packets, so a research step with a
 nested search is a research step, not a search step. `ResearchAgentRenderer`
-splits its nested calls with
-`app/app/message/messageComponents/timeline/packetHelpers.ts:groupNestedCalls`,
-which clears `sub_turn_index` so each call reads as a standalone step, and draws
-each call with the renderer of its tool.
+draws each entry of the step's `nestedCalls` (passed down by the timeline
+renderers) with the renderer of its tool.
 `CodingAgentRenderer` splits its bash commands on `sub_turn_index` itself.
 After the answer starts, only a tool packet that opens a new group (the packet
 that makes the group a timeline step) is a new tool call and sets
@@ -182,17 +180,27 @@ tool calls a program makes, not the program.
 turns each nested call of an `execute_code` or `wait_code` group into its own
 step, drawn by that tool's renderer as a direct call would be. The packet
 processor splits a group's nested calls once per packet into
-`GroupedPacket.nestedCalls`, so a long stream does not split them again on
-each update. A cell reports a
+`GroupedPacket.nestedCalls` with
+`app/app/message/messageComponents/timeline/packetHelpers.ts:nestedCallSnapshot`.
+It reuses the `NestedCall` object of each unchanged call, and
+`expandCodeModeSteps` reuses the step it made for that object, so memoized
+renderers of finished calls do not redraw. A cell reports a
 call in every observation until the call ends, so the latest report replaces
 the earlier ones in place; the cell id from `code_mode_start` or
 `code_mode_delta` links the observations. The program, its output, `wait_code`
 calls, yields and closing records have no step. A program without tool calls
-shows no step; while it runs, `isCodeModeWorking` sets `codeModeWorking`, and
-the timeline header reads "Working". The header names a step's activity from
-its own first packet; nested packets do not decide it. `TransformedStep.groupKey` keeps the packet group of a step,
-so pacing still knows restored steps. Mobile uses the same functions in
-`mobile/src/chat/timeline/transformers.ts`.
+shows no step. `expandCodeModeSteps` returns the steps and `codeModeWorking`
+in one pass: a started program whose latest observation is open and whose
+cell has no running call sets it, and the timeline header reads "Working".
+The header names a step's activity from its own first packet; nested packets
+do not decide it. `TransformedStep.groupKey` keeps the packet group of a step,
+so pacing still knows restored steps. A turn group's React key is the key of
+its first step, not its position, because a cell's new call can move later
+steps into another turn group. Concurrent calls of one program show as
+sequential steps, not parallel tabs: on replay the backend emits each call's
+packets one after another, and the saved calls have no start or end order, so
+the client cannot tell which calls overlapped. Mobile uses the same functions
+in `mobile/src/chat/timeline/transformers.ts`.
 
 **Stop reasons.** `StopReason` (`app/app/services/streamingModels.ts`) is
 `finished`, `user_cancelled` or `timed_out`. `AgentMessage` shows "User has

@@ -41,7 +41,7 @@ export const isGroupEndPacket = (packet: Packet): boolean =>
     packet.obj.type === PacketType.ERROR);
 
 /** One nested tool call of a parent step. */
-export interface NestedCallGroup {
+export interface NestedCall {
   subTurnIndex: number;
   /** The call's packets placed at parent level (sub_turn_index null), so the
    * tool's own renderer and the step-kind checks read it as a standalone call. */
@@ -56,31 +56,30 @@ export const asStandalonePacket = (packet: Packet): Packet => ({
 });
 
 /** Nested calls ordered by sub_turn_index, from packets already placed at
- * parent level. */
-export function nestedCallGroups(
-  bySubTurn: Map<number, Packet[]>
-): NestedCallGroup[] {
-  return Array.from(bySubTurn.entries())
+ * parent level. A call whose packet count did not change keeps its previous
+ * object, and an unchanged list keeps its previous array, so memoized renderers
+ * skip calls that have not changed. */
+export function nestedCallSnapshot(
+  bySubTurn: ReadonlyMap<number, Packet[]>,
+  previous: NestedCall[] = []
+): NestedCall[] {
+  const previousByIndex = new Map(
+    previous.map((call) => [call.subTurnIndex, call])
+  );
+  let changed = previous.length !== bySubTurn.size;
+  const calls = Array.from(bySubTurn.entries())
     .sort(([a], [b]) => a - b)
-    .map(([subTurnIndex, callPackets]) => ({
-      subTurnIndex,
-      packets: [...callPackets],
-      complete: callPackets.some(isGroupEndPacket),
-    }));
-}
-
-/** Splits the nested calls of a parent step into groups, ordered by
- * sub_turn_index. */
-export function groupNestedCalls(packets: Packet[]): NestedCallGroup[] {
-  const bySubTurn = new Map<number, Packet[]>();
-  for (const packet of packets) {
-    const subTurnIndex = packet.placement.sub_turn_index;
-    if (subTurnIndex === undefined || subTurnIndex === null) continue;
-    const call = bySubTurn.get(subTurnIndex) ?? [];
-    call.push(asStandalonePacket(packet));
-    bySubTurn.set(subTurnIndex, call);
-  }
-  return nestedCallGroups(bySubTurn);
+    .map(([subTurnIndex, callPackets]): NestedCall => {
+      const prior = previousByIndex.get(subTurnIndex);
+      if (prior && prior.packets.length === callPackets.length) return prior;
+      changed = true;
+      return {
+        subTurnIndex,
+        packets: [...callPackets],
+        complete: callPackets.some(isGroupEndPacket),
+      };
+    });
+  return changed ? calls : previous;
 }
 
 // Check if packets belong to a research agent (handles its own Done indicator)

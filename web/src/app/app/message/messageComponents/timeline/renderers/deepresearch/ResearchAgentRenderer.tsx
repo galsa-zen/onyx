@@ -15,9 +15,9 @@ import {
 } from "@/app/app/message/messageComponents/types";
 import { StepContainer } from "@/app/app/message/messageComponents/timeline/StepContainer";
 import {
-  groupNestedCalls,
   isGroupEndPacket,
   isNestedPacket,
+  NestedCall,
 } from "@/app/app/message/messageComponents/timeline/packetHelpers";
 import {
   TimelineRendererComponent,
@@ -31,6 +31,8 @@ import {
   useMarkdownComponents,
   renderMarkdown,
 } from "@/app/app/message/messageComponents/markdownUtils";
+
+const NO_NESTED_CALLS: NestedCall[] = [];
 
 /**
  * ResearchAgentRenderer - Renders research agent steps in deep research
@@ -51,6 +53,7 @@ export const ResearchAgentRenderer: MessageRenderer<
   FullChatState
 > = ({
   packets,
+  nestedCalls,
   state,
   onComplete,
   renderType,
@@ -73,7 +76,7 @@ export const ResearchAgentRenderer: MessageRenderer<
     () => packets.filter((packet) => !isNestedPacket(packet)),
     [packets]
   );
-  const nestedToolGroups = useMemo(() => groupNestedCalls(packets), [packets]);
+  const nestedToolGroups = nestedCalls ?? NO_NESTED_CALLS;
 
   // Filter nested tool groups based on renderType (COMPACT and HIGHLIGHT show only latest)
   const visibleNestedToolGroups = useMemo(() => {

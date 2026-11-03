@@ -23,7 +23,6 @@ import {
   TurnGroup,
   expandCodeModeSteps,
   groupStepsByTurn,
-  isCodeModeWorking,
   transformPacketGroups,
 } from "@/chat/timeline/transformers";
 
@@ -97,11 +96,10 @@ export function usePacketProcessor(
   ]);
 
   const { toolTurnGroups, codeModeWorking } = useMemo(() => {
-    const steps = transformPacketGroups(state.toolGroups);
-    return {
-      toolTurnGroups: groupStepsByTurn(expandCodeModeSteps(steps)),
-      codeModeWorking: isCodeModeWorking(steps),
-    };
+    const { steps, codeModeWorking } = expandCodeModeSteps(
+      transformPacketGroups(state.toolGroups),
+    );
+    return { toolTurnGroups: groupStepsByTurn(steps), codeModeWorking };
   }, [state.toolGroups]);
 
   // Read the current render's finalAnswerComing, not an effect-lagged mirror — so a renderer's

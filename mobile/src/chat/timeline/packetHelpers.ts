@@ -54,17 +54,30 @@ export const asStandalonePacket = (packet: Packet): Packet => ({
   placement: { ...packet.placement, sub_turn_index: null },
 });
 
-/** Nested calls ordered by sub_turn_index, from packets already placed at parent level. */
-export function nestedCallGroups(
-  bySubTurn: Map<number, Packet[]>,
+/** Nested calls ordered by sub_turn_index, from packets already placed at parent level. A call
+ * whose packet count did not change keeps its previous object, and an unchanged list keeps its
+ * previous array, so memoized renderers skip calls that have not changed. */
+export function nestedCallSnapshot(
+  bySubTurn: ReadonlyMap<number, Packet[]>,
+  previous: NestedCall[] = [],
 ): NestedCall[] {
-  return Array.from(bySubTurn.entries())
+  const previousByIndex = new Map(
+    previous.map((call) => [call.subTurnIndex, call]),
+  );
+  let changed = previous.length !== bySubTurn.size;
+  const calls = Array.from(bySubTurn.entries())
     .sort(([a], [b]) => a - b)
-    .map(([subTurnIndex, callPackets]) => ({
-      subTurnIndex,
-      packets: [...callPackets],
-      complete: callPackets.some(isGroupEndPacket),
-    }));
+    .map(([subTurnIndex, callPackets]): NestedCall => {
+      const prior = previousByIndex.get(subTurnIndex);
+      if (prior && prior.packets.length === callPackets.length) return prior;
+      changed = true;
+      return {
+        subTurnIndex,
+        packets: [...callPackets],
+        complete: callPackets.some(isGroupEndPacket),
+      };
+    });
+  return changed ? calls : previous;
 }
 
 export const isResearchAgentPackets = (packets: Packet[]): boolean =>

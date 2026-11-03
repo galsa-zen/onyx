@@ -9,7 +9,6 @@ import { type Packet } from "@/chat/streamingModels";
 import {
   expandCodeModeSteps,
   groupStepsByTurn,
-  isCodeModeWorking,
   transformPacketGroups,
 } from "@/chat/timeline/transformers";
 
@@ -97,7 +96,7 @@ describe("transformers", () => {
     ];
 
     it("shows each call once, as a step of its own", () => {
-      const steps = expandCodeModeSteps(
+      const { steps } = expandCodeModeSteps(
         stepsOf([
           ...observation(0, search(0, false), true),
           ...observation(1, search(1, true), true),
@@ -108,10 +107,21 @@ describe("transformers", () => {
     });
 
     it("gives a program without calls no step, and works until it returns", () => {
-      const running = stepsOf(observation(0, [], false));
-      expect(expandCodeModeSteps(running)).toEqual([]);
-      expect(isCodeModeWorking(running)).toBe(true);
-      expect(isCodeModeWorking(stepsOf(observation(0, [], true)))).toBe(false);
+      const running = expandCodeModeSteps(stepsOf(observation(0, [], false)));
+      expect(running.steps).toEqual([]);
+      expect(running.codeModeWorking).toBe(true);
+      const ended = expandCodeModeSteps(stepsOf(observation(0, [], true)));
+      expect(ended.codeModeWorking).toBe(false);
+    });
+
+    it("does not work while a call carried from an earlier observation runs", () => {
+      const { codeModeWorking } = expandCodeModeSteps(
+        stepsOf([
+          ...observation(0, search(0, false), true),
+          ...observation(1, [], false),
+        ]),
+      );
+      expect(codeModeWorking).toBe(false);
     });
   });
 });
