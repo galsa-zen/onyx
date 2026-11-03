@@ -181,6 +181,9 @@ logger = setup_logger()
 SEARCH_DECISION_RERANK_EXPANSION_FLAG = "onyx-search-decision-rerank-expansion"
 
 QUERIES_FIELD = "queries"
+_CODE_MODE_RESULT = replace(
+    SEARCH_RESULTS_CODE_MODE_RESULT, usage=CODE_MODE_SEARCH_USAGE
+)
 
 
 def update_search_context(
@@ -711,7 +714,7 @@ class SearchTool(Tool):
 
     @property
     def code_mode_result(self) -> CodeModeResultSpec:
-        return replace(SEARCH_RESULTS_CODE_MODE_RESULT, usage=CODE_MODE_SEARCH_USAGE)
+        return _CODE_MODE_RESULT
 
     """For explicit tool calling"""
 

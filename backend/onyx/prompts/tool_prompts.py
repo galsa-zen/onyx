@@ -22,20 +22,28 @@ If it is unclear which tool to use, consider using multiple in parallel to be ef
 
 CODE_MODE_GUIDANCE = """
 ## execute_code
-Call tools from Python programs with `execute_code`; its description lists the functions. Batch independent calls in one `execute_code` with `asyncio.gather`, and inspect every result. Give `internal_search` all queries for one information need in a single call. Keep dependent or judgment-based follow-ups in a later call. Avoid unnecessary output.
+Call tools from Python programs with `execute_code`; its description lists the functions. Batch independent calls in one `execute_code` with `asyncio.gather`, and inspect every result. Keep dependent or judgment-based follow-ups in a later call. Avoid unnecessary output.
 """.lstrip()
 
 
-INTERNAL_SEARCH_GUIDANCE = """
+_INTERNAL_SEARCH_USES = """
 ## internal_search
-Use `internal_search` to search connected applications for information. Some examples of when to use `internal_search` include:
+Use the `internal_search` tool to search connected applications for information. Some examples of when to use `internal_search` include:
 - Internal information: any time where there may be some information stored in internal applications that could help better answer the query.
 - Niche/Specific information: information that is likely not found in public sources, things specific to a project or product, team, process, etc.
 - Keyword Queries: queries that are heavily keyword based are often internal document search queries.
 - Ambiguity: questions about something that is not widely known or understood.
 """.lstrip()
 
-# Code mode only: each internal_search call runs its own retrieval pipeline.
+# Code mode programs call internal_search as a function; its stub carries the
+# batching note (CODE_MODE_SEARCH_USAGE), so it omits the query limit.
+CODE_MODE_INTERNAL_SEARCH_GUIDANCE = _INTERNAL_SEARCH_USES
+INTERNAL_SEARCH_GUIDANCE = (
+    _INTERNAL_SEARCH_USES + "Never provide more than 3 queries at once to `internal_search`.\n"
+)
+
+# The internal_search stub's note in code mode: each call runs its own retrieval
+# pipeline.
 CODE_MODE_SEARCH_USAGE = (
     "Each call runs a full retrieval pipeline with several model calls, so it is "
     "expensive. Pass all queries for one information need in one call, for example "
@@ -45,15 +53,9 @@ CODE_MODE_SEARCH_USAGE = (
 )
 
 
-# Direct tool calls only: a code mode program can run many searches.
-INTERNAL_SEARCH_QUERY_LIMIT = """
-Never provide more than 3 queries at once to `internal_search`.
-""".lstrip()
-
-
 WEB_SEARCH_GUIDANCE = """
 ## web_search
-Use `web_search` to access up-to-date information from the web. Some examples of when to use `web_search` include:
+Use the `web_search` tool to access up-to-date information from the web. Some examples of when to use `web_search` include:
 - Freshness: when the answer might be enhanced by up-to-date information on a topic. Very important for topics that are changing or evolving.
 - Accuracy: if the cost of outdated/inaccurate information is high.
 - Niche Information: when detailed info is not widely known or understood (but is likely found on the internet).{site_colon_disabled}
@@ -66,15 +68,15 @@ Do not use the "site:" operator in your web search queries.
 
 OPEN_URLS_GUIDANCE = """
 ## open_url
-Use `open_url` to read the content of one or more URLs. Use it to access the contents of the most promising web pages from your web searches or user specified URLs. \
+Use the `open_url` tool to read the content of one or more URLs. Use this tool to access the contents of the most promising web pages from your web searches or user specified URLs. \
 You can open many URLs at once by passing multiple URLs in the array if multiple pages seem promising. Prioritize the most promising pages and reputable sources. \
 Do not open URLs that are image files like .png, .jpg, etc.
-You should almost always use `open_url` after `web_search`. Use it when a user asks about a specific provided URL.
+You should almost always use open_url after a web_search call. Use this tool when a user asks about a specific provided URL.
 """.lstrip()
 
 PYTHON_TOOL_GUIDANCE = """
 ## run_python
-Use `run_python` to execute Python code in an isolated sandbox. It responds with the output of the execution or time out after 60.0 seconds.
+Use the `run_python` tool to execute Python code in an isolated sandbox. The tool will respond with the output of the execution or time out after 60.0 seconds.
 Any files uploaded to the chat will be automatically be available in the execution environment's current directory. \
 The current directory in the file system can be used to save and persist user files. Files written to the current directory will be returned with a `file_link`. \
 Use this to give the user a way to download the file OR to display generated images.
@@ -82,7 +84,7 @@ Internet access for this session is disabled. Do not make external web requests 
 Use `openpyxl` to read and write Excel files. You have access to libraries like numpy, pandas, scipy, matplotlib, and PIL.
 Write chart titles, axis labels, legends, and other text rendered into images in the language you reply in. \
 The sandbox fonts cannot shape Arabic or render CJK glyphs (they come out as disconnected letters or boxes), so for those languages write the rendered text in English and explain the labels in your reply.
-IMPORTANT: each `run_python` call runs in a fresh, stateless sandbox. Variables, imports, and in-memory state from previous calls will NOT be available, \
+IMPORTANT: each call to this tool runs in a fresh, stateless sandbox. Variables, imports, and in-memory state from previous calls will NOT be available, \
 and files written by a previous call will NOT be available in later calls. \
 Therefore batch multi-step work into a single script per call: e.g. load a workbook once, read all needed sheets, apply all edits, and save the result in one execution — not one small step per call.
 """.lstrip()
@@ -91,13 +93,13 @@ GENERATE_IMAGE_GUIDANCE = """
 ## generate_image
 NEVER use generate_image unless the user specifically requests an image.
 To edit, restyle, or vary an existing image, pass its file_id in `reference_image_file_ids`. \
-File IDs come from `[attached image — file_id: <id>]` tags on user-attached images or from prior `generate_image` results — never invent one. \
+File IDs come from `[attached image — file_id: <id>]` tags on user-attached images or from prior `generate_image` tool results — never invent one. \
 Leave `reference_image_file_ids` unset for a fresh generation.
 """.lstrip()
 
 MEMORY_GUIDANCE = """
 ## add_memory
-Use `add_memory` for facts shared by the user that should be remembered for future conversations. \
+Use the `add_memory` tool for facts shared by the user that should be remembered for future conversations. \
 Only add memories that are specific, likely to remain true, and likely to be useful later. \
 Focus on enduring preferences, long-term goals, stable constraints, and explicit "remember this" type requests.
 """.lstrip()

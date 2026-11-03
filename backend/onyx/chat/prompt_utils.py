@@ -61,9 +61,9 @@ from onyx.prompts.prompt_utils import (
 )
 from onyx.prompts.tool_prompts import (
     CODE_MODE_GUIDANCE,
+    CODE_MODE_INTERNAL_SEARCH_GUIDANCE,
     GENERATE_IMAGE_GUIDANCE,
     INTERNAL_SEARCH_GUIDANCE,
-    INTERNAL_SEARCH_QUERY_LIMIT,
     MEMORY_GUIDANCE,
     OPEN_URLS_GUIDANCE,
     PYTHON_TOOL_GUIDANCE,
@@ -119,13 +119,10 @@ def build_chat_reminder(
     if not enabled:
         return context.persona_task_prompt
     reminder_text = context.persona_task_prompt
+    parts = [part for result in results for part in tool_result_parts(result)]
     # Only suggest opening URLs when this agent has the tool.
     if (
-        not any(
-            part.tool_name == ImageGenerationTool.NAME
-            for result in results
-            for part in tool_result_parts(result)
-        )
+        not any(part.tool_name == ImageGenerationTool.NAME for part in parts)
         and context.has_open_url_tool
         and not context.out_of_cycles
         and any(
@@ -147,14 +144,12 @@ def build_chat_reminder(
             part.tool_name == PythonTool.NAME
             and isinstance(part.details, LlmPythonExecutionResult)
             and part.details.generated_files
-            for result in results
-            for part in tool_result_parts(result)
+            for part in parts
         ),
         include_image_reminder=any(
             isinstance(part.details, FinalImageGenerationResponse)
             and part.details.generated_images
-            for result in results
-            for part in tool_result_parts(result)
+            for part in parts
         ),
         is_last_cycle=context.out_of_cycles,
     )
@@ -509,7 +504,7 @@ def build_system_prompt(
     if include_all_guidance:
         tool_sections = [
             TOOL_DESCRIPTION_SEARCH_GUIDANCE,
-            INTERNAL_SEARCH_GUIDANCE + INTERNAL_SEARCH_QUERY_LIMIT,
+            INTERNAL_SEARCH_GUIDANCE,
             WEB_SEARCH_GUIDANCE.format(
                 site_colon_disabled=WEB_SEARCH_SITE_DISABLED_GUIDANCE
             ),
@@ -541,9 +536,9 @@ def build_system_prompt(
         # These are not included at the Tool level because the ordering may matter.
         if has_internal_search or include_all_guidance:
             tool_guidance_sections.append(
-                INTERNAL_SEARCH_GUIDANCE
+                CODE_MODE_INTERNAL_SEARCH_GUIDANCE
                 if code_mode
-                else INTERNAL_SEARCH_GUIDANCE + INTERNAL_SEARCH_QUERY_LIMIT
+                else INTERNAL_SEARCH_GUIDANCE
             )
 
         if has_web_search or include_all_guidance:

@@ -43,7 +43,7 @@ from onyx.llm.models import (
 from onyx.prompts.tool_prompts import (
     CODE_MODE_GUIDANCE,
     INTERNAL_SEARCH_GUIDANCE,
-    INTERNAL_SEARCH_QUERY_LIMIT,
+    TOOL_DESCRIPTION_SEARCH_GUIDANCE,
 )
 from onyx.server.query_and_chat import streaming_models as packets
 from onyx.server.query_and_chat.placement import Placement
@@ -327,14 +327,15 @@ def test_code_argument_streams_live_as_execute_code() -> None:
     assert packet.obj.argument_deltas == {"code": "print(1)"}
 
 
-def test_direct_search_guidance_keeps_the_query_limit() -> None:
+def test_direct_search_guidance_keeps_the_query_limit_and_stop_rule() -> None:
     # Code mode guidance is checked through a real chat in
     # external_dependency_unit/answer/test_code_mode_citations.py.
     search = MagicMock(spec=SearchTool)
     search.name = SearchTool.NAME
     direct = build_system_prompt("base", tools=[search], include_user_info=False)
     assert CODE_MODE_GUIDANCE not in direct
-    assert INTERNAL_SEARCH_GUIDANCE + INTERNAL_SEARCH_QUERY_LIMIT in direct
+    assert INTERNAL_SEARCH_GUIDANCE in direct
+    assert TOOL_DESCRIPTION_SEARCH_GUIDANCE in direct
 
 
 def test_nested_custom_call_renders_its_saved_result() -> None:

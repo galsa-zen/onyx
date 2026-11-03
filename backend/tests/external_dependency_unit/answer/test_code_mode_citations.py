@@ -18,8 +18,10 @@ from onyx.llm.model_response import (
 from onyx.prompts.chat_prompts import REQUIRE_CITATION_GUIDANCE
 from onyx.prompts.tool_prompts import (
     CODE_MODE_GUIDANCE,
+    CODE_MODE_INTERNAL_SEARCH_GUIDANCE,
+    CODE_MODE_SEARCH_USAGE,
     INTERNAL_SEARCH_GUIDANCE,
-    INTERNAL_SEARCH_QUERY_LIMIT,
+    TOOL_DESCRIPTION_SEARCH_GUIDANCE,
 )
 from onyx.server.query_and_chat.chat_backend import get_chat_session
 from onyx.server.query_and_chat.streaming_models import (
@@ -153,15 +155,24 @@ def test_code_mode_citations_stream_save_reload_and_continue(
         )
         parts = send(session.id, user, first, "How did Q2 revenue change?")
     assert final_answer(parts).startswith("Revenue grew")
-    # The prompt keeps the guidance of the tools inside programs, without the
-    # query limit of a direct search call.
+    # The prompt keeps the guidance of the tools inside programs, with the stop
+    # rule and without the query limit of a direct search call.
     system = "\n".join(
         message.content
         for message in first.requests[0]["prompt"]
         if isinstance(message, SystemMessage)
     )
-    assert CODE_MODE_GUIDANCE in system and INTERNAL_SEARCH_GUIDANCE in system
-    assert INTERNAL_SEARCH_QUERY_LIMIT not in system
+    assert CODE_MODE_GUIDANCE in system
+    assert CODE_MODE_INTERNAL_SEARCH_GUIDANCE in system
+    assert INTERNAL_SEARCH_GUIDANCE not in system
+    assert TOOL_DESCRIPTION_SEARCH_GUIDANCE in system
+    # The real search tool's stub asks for one call per information need.
+    [description] = [
+        tool["function"]["description"]
+        for tool in first.requests[0]["tools"]
+        if tool["function"]["name"] == "execute_code"
+    ]
+    assert CODE_MODE_SEARCH_USAGE in description
     assert "Output:\n1 Q2 revenue" in tool_text(first.requests[1]["prompt"], "search")
     # The searched document's file reaches the next program's Python tool.
     assert f"Q2 revenue_{file_id}" in tool_text(first.requests[2]["prompt"], "python")

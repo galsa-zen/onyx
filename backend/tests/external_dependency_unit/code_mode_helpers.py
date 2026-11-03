@@ -133,7 +133,8 @@ def tool_text(prompt: Sequence[ChatCompletionMessage], call_id: str) -> str:
         for message in prompt
         if isinstance(message, ToolMessage) and message.tool_call_id == call_id
     ]
-    return message.content
+    content = message.content
+    return content if isinstance(content, str) else "".join(p.text for p in content)
 
 
 def last_tool_text(llm: ScriptedLLM, call_id: str) -> str:
