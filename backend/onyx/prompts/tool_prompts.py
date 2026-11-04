@@ -13,8 +13,7 @@ In ambiguous cases, favor searching to get more context.
 When using any search type tool, do not make any assumptions and stay as faithful to the user's query as possible. \
 Between internal and web search (if both are available), think about if the user's query is likely better answered by team internal sources or online web pages. \
 When searching for information, if the initial results cannot fully answer the user's query, try again with different tools or arguments. \
-Do not repeat the same or very similar queries if it already has been run in the chat history. \
-If two or three searches with different phrasings find nothing relevant, stop searching: answer with what you found and say what you could not find.
+Do not repeat the same or very similar queries if it already has been run in the chat history.
 
 If it is unclear which tool to use, consider using multiple in parallel to be efficient with time.
 """.lstrip()
