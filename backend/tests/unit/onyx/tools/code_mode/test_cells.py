@@ -275,23 +275,6 @@ def test_terminate_stops_the_cell() -> None:
     assert response.finish() == {}
 
 
-def test_a_stale_stdout_flush_timer_keeps_the_current_one() -> None:
-    response = Response()
-    response.run("yield_control()\nawait gate(value='g')\n")
-    cell = response.cell(1)
-    current = threading.Timer(60, lambda: None)
-    with cell._lock:
-        cell._flush_timer = current
-    # A timer that fired while a flush held the lock runs after the newer one
-    # was set.
-    cell._flush_stdout_later(threading.Timer(60, lambda: None))
-    assert cell._flush_timer is current
-    with cell._lock:
-        cell._flush_timer = None
-    response.gate.set()
-    assert _details(response.wait(1)).status == "completed"
-
-
 def test_one_active_wait_per_cell() -> None:
     response = Response()
     response.run("import asyncio\nyield_control()\nawait asyncio.sleep(30)\n")

@@ -83,7 +83,10 @@ from onyx.tools.tool_implementations.utils import truncate_output
 from onyx.tracing.framework.create import function_span
 from onyx.utils.logger import setup_logger
 from onyx.utils.pydantic_util import as_base
-from onyx.utils.threadpool_concurrency import start_thread_future
+from onyx.utils.threadpool_concurrency import (
+    start_thread_future,
+    start_thread_with_context,
+)
 
 logger = setup_logger()
 
@@ -542,7 +545,8 @@ class CodeCell:
         # Printed text not yet sent to the attached observer.
         self._pending_stdout: list[str] = []
         self._pending_stdout_chars = 0
-        self._flush_timer: threading.Timer | None = None
+        # A flush of the buffered printed text is due; one at a time per cell.
+        self._flush_armed = False
         # The attached observer. After Stop it stays attached; `close` saves it.
         self._observer: _Observer | None = None
         self._observations = 0
@@ -877,19 +881,16 @@ class CodeCell:
         self._pending_stdout_chars += len(text)
         if self._pending_stdout_chars >= STDOUT_FLUSH_CHARS:
             self._flush_stdout()
-        elif self._flush_timer is None:
-            timer = threading.Timer(
-                STDOUT_FLUSH_SECONDS, lambda: self._flush_stdout_later(timer)
+        elif not self._flush_armed:
+            self._flush_armed = True
+            start_thread_with_context(
+                self._flush_stdout_later,
+                name=f"code-mode-cell-{self.id}-stdout",
+                daemon=True,
             )
-            timer.daemon = True
-            self._flush_timer = timer
-            timer.start()
 
     def _flush_stdout(self) -> None:
         """Send the buffered printed text to the attached observer."""
-        if self._flush_timer is not None:
-            self._flush_timer.cancel()
-            self._flush_timer = None
         if not self._pending_stdout:
             return
         text = "".join(self._pending_stdout)
@@ -897,12 +898,13 @@ class CodeCell:
         self._pending_stdout_chars = 0
         self._publish(CodeModeStdout(text=text))
 
-    def _flush_stdout_later(self, timer: threading.Timer) -> None:
+    def _flush_stdout_later(self) -> None:
+        # Earlier flushes do not disarm it, so printing starts at most one flush
+        # thread per STDOUT_FLUSH_SECONDS.
+        time.sleep(STDOUT_FLUSH_SECONDS)
         with self._lock:
-            # A timer that fired while a flush held the lock is stale; the
-            # current timer owns the buffered text.
-            if self._flush_timer is timer:
-                self._flush_stdout()
+            self._flush_armed = False
+            self._flush_stdout()
 
     def _send(self, details: CellEvent) -> None:
         with self._lock:
