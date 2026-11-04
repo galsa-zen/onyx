@@ -32,6 +32,7 @@ describe("useTimelineHeader — text map", () => {
           { turn_index: 0 },
           { is_internet_search: false },
         ),
+        makePacket(PacketType.SECTION_END, { turn_index: 0 }),
       ]),
     ]);
     const { result } = renderHook(() =>
