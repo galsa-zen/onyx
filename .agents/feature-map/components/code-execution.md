@@ -113,7 +113,8 @@ execute_code / wait_code (code mode; a cell per program, a store per chat)
                                         (all functions, type-checked) and `listed_text` (no
                                         DEFERRED ones, in the description); tool_search()
                                         (tool_search.py, BM25) only when some are DEFERRED
-  CodeModeTool._run -> CodeCells.start  MAX_OPEN_CELLS per response; cell id = 1 + the highest
+  CodeModeTool._run -> CodeCells.start  MAX_OPEN_CELLS per response, MAX_RUNNING_CELLS per
+                                        process (else BUSY_MESSAGE); cell id = 1 + the highest
                                         id in the branch; store snapshot = store.py:store_snapshot
     CodeCell                            a driver thread runs the program inside a
                                         code_mode_cell span (status, duration, call count,
@@ -311,7 +312,10 @@ health calls are not retried.
     (`server/features/mcp/client.py:call_mcp_tool` with the invocation's
     cancellation). A response has at most `MAX_OPEN_CELLS` (4)
     open cells (`tools/tool_implementations/code_mode/cells.py`), so idle cells
-    cost only their driver threads. A new program that finds no free worker for
+    cost only their driver threads. A server process runs at most
+    `MAX_RUNNING_CELLS` (64) cells whose program has not ended
+    (`tools/tool_implementations/code_mode/cells.py:_RunningCells`); a new cell over this limit gets `BUSY_MESSAGE`
+    and does not start. A new program that finds no free worker for
     `CHECKOUT_TIMEOUT_SECONDS` gets `BUSY_MESSAGE`; a resumed program waits for
     a worker up to its lifetime. A program that waits (an `await` on
     unfinished tool calls or sleeps, or a synchronous `time.sleep`) keeps its

@@ -67,6 +67,7 @@ from onyx.tools.tool_implementations.code_mode.prompt import (
     format_content,
 )
 from onyx.tools.tool_implementations.code_mode.sandbox import (
+    BUSY_MESSAGE,
     execute_program,
 )
 from onyx.tools.tool_implementations.code_mode.store import (
@@ -98,9 +99,14 @@ TERMINATED_MESSAGE = "The cell was terminated."
 MAX_SAVED_CALL_CHARS = 10_000
 MIN_SAVED_CALL_CHARS = 500
 MAX_SAVED_EXECUTION_CHARS = 200_000
-# Open cells per response. With the chat requests a server process serves, this
-# bounds its cells; sandbox.MAX_TOOL_CALL_THREADS bounds their tool call threads.
+# Open cells per response.
 MAX_OPEN_CELLS = 4
+# Cells whose program has not ended, in the server process; each holds a driver
+# thread. At this limit, sandbox.MAX_TOOL_CALL_THREADS still gives every program
+# a share of 3 tool call threads. Programs give up their sandbox worker
+# (sandbox.MAX_SANDBOX_PROCESSES) while they wait on tools, so most of these
+# cells wait on tools, not on a worker.
+MAX_RUNNING_CELLS = 64
 # Progress events kept for an observer while none is attached; call starts and
 # ends are always kept.
 MAX_BUFFERED_PROGRESS_EVENTS = 1_000
@@ -361,6 +367,32 @@ def _call_result(
     return outcome
 
 
+class _RunningCells:
+    """The process-wide budget of running cells (MAX_RUNNING_CELLS)."""
+
+    def __init__(self, limit: int) -> None:
+        self._lock = threading.Lock()
+        self._limit = limit
+        self._running = 0
+
+    def acquire(self) -> bool:
+        with self._lock:
+            if self._running >= self._limit:
+                return False
+            self._running += 1
+            metrics.CELLS_RUNNING.set(self._running)
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            self._running -= 1
+            metrics.CELLS_RUNNING.set(self._running)
+
+
+_running_cells = _RunningCells(MAX_RUNNING_CELLS)
+metrics.CELLS_LIMIT.set(MAX_RUNNING_CELLS)
+
+
 def _rejected(text: str) -> ToolCallException:
     return ToolCallException(message=text, llm_facing_message=text)
 
@@ -548,10 +580,14 @@ class CodeCell:
             if self._observations:
                 raise RuntimeError(f"Cell {self.id} already started")
             observer = self._attach(self._source, self._context, max_tokens)
-        start_thread_future(
-            partial(self._drive, snapshot, observer.invocation.cancellation),
-            name=f"code-mode-cell-{self.id}",
-        )
+        try:
+            start_thread_future(
+                partial(self._drive, snapshot, observer.invocation.cancellation),
+                name=f"code-mode-cell-{self.id}",
+            )
+        except BaseException:
+            _running_cells.release()
+            raise
         return self._observe(observer, yield_seconds)
 
     def observe(
@@ -871,26 +907,26 @@ class CodeCell:
         self, snapshot: StoreSnapshot, run_cancellation: CancellationSignal
     ) -> None:
         # The cell's span is the parent of its nested tool spans.
-        with (
-            function_span(CELL_SPAN_NAME, input=self._program.code) as span,
-            metrics.CELLS_RUNNING.track_inprogress(),
-        ):
-            store = ProgramStore(snapshot)
-            end = self._execute(store, run_cancellation)
-            self._end_program(end, store)
-            with self._lock:
-                status = self._final_status()
-                metrics.observe_program_end(status, end.duration_seconds)
-                span.span_data.output = status
-                span.span_data.metadata = {
-                    "code_mode.cell_id": self.id,
-                    "code_mode.status": status,
-                    "code_mode.duration_seconds": end.duration_seconds,
-                    "code_mode.tool_call_count": len(self._calls),
-                    "code_mode.tool_names": sorted(
-                        {record.call.tool_name for record in self._calls.values()}
-                    ),
-                }
+        try:
+            with function_span(CELL_SPAN_NAME, input=self._program.code) as span:
+                store = ProgramStore(snapshot)
+                end = self._execute(store, run_cancellation)
+                self._end_program(end, store)
+                with self._lock:
+                    status = self._final_status()
+                    metrics.observe_program_end(status, end.duration_seconds)
+                    span.span_data.output = status
+                    span.span_data.metadata = {
+                        "code_mode.cell_id": self.id,
+                        "code_mode.status": status,
+                        "code_mode.duration_seconds": end.duration_seconds,
+                        "code_mode.tool_call_count": len(self._calls),
+                        "code_mode.tool_names": sorted(
+                            {record.call.tool_name for record in self._calls.values()}
+                        ),
+                    }
+        finally:
+            _running_cells.release()
 
     def _execute(
         self, store: ProgramStore, run_cancellation: CancellationSignal
@@ -1135,19 +1171,27 @@ class CodeCells:
                     f"Open cells: {names}. Get their results with wait_code, or stop "
                     "one with wait_code(cell_id=N, terminate=true)."
                 )
-            history = _recorded_cell_ids(invocation.recorded_results)
-            cell_id = max(self._highest_id, *history, 0) + 1
-            self._highest_id = cell_id
-            snapshot = self._store.snapshot(invocation.recorded_results)
-            cell = CodeCell(
-                cell_id=cell_id,
-                program=program,
-                citations=self._citations,
-                store=self._store,
-                invocation=invocation,
-                context=context,
-            )
-            self._cells[cell_id] = cell
+            if not _running_cells.acquire():
+                metrics.CELL_BUSY_REJECTIONS.inc()
+                raise _rejected(BUSY_MESSAGE)
+            try:
+                history = _recorded_cell_ids(invocation.recorded_results)
+                cell_id = max(self._highest_id, *history, 0) + 1
+                self._highest_id = cell_id
+                snapshot = self._store.snapshot(invocation.recorded_results)
+                cell = CodeCell(
+                    cell_id=cell_id,
+                    program=program,
+                    citations=self._citations,
+                    store=self._store,
+                    invocation=invocation,
+                    context=context,
+                )
+                self._cells[cell_id] = cell
+            except BaseException:
+                _running_cells.release()
+                raise
+        # The cell's driver releases the running cell.
         return cell.start(snapshot, yield_seconds=yield_seconds, max_tokens=max_tokens)
 
     def wait(

@@ -1,8 +1,8 @@
 """Prometheus metrics for code mode capacity in one API server process.
 
-The sandbox worker pool, the dumped-program budget and the tool call thread
-budget are per process. The gauges of these three budgets each have a matching
-`_limit` gauge to compare against. Labels are closed enums; no tenant or user
+The sandbox worker pool, the dumped-program budget, the tool call thread budget
+and the running cell budget are per process. The gauges of these budgets each
+have a matching `_limit` gauge to compare against. Labels are closed enums; no tenant or user
 labels.
 """
 
@@ -59,7 +59,15 @@ TOOL_CALL_THREADS_LIMIT = Gauge(
 )
 CELLS_RUNNING = Gauge(
     "onyx_code_mode_cells_running",
-    "Cells whose program has not ended.",
+    "Cells whose program has not ended, each with a driver thread.",
+)
+CELLS_LIMIT = Gauge(
+    "onyx_code_mode_cells_limit",
+    "Cells whose program has not ended that the process allows.",
+)
+CELL_BUSY_REJECTIONS = Counter(
+    "onyx_code_mode_cell_busy_rejections_total",
+    "New cells refused because the process had its limit of running cells.",
 )
 PROGRAMS = Counter(
     "onyx_code_mode_programs_total",

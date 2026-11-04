@@ -38,6 +38,7 @@ from onyx.tools.tool_implementations.code_mode.models import (
     SandboxLimits,
     SandboxResult,
 )
+from onyx.tools.tool_implementations.code_mode.sandbox import BUSY_MESSAGE
 from onyx.utils.threadpool_concurrency import start_thread_future
 from tests.unit.onyx.tools.code_mode.fakes import (
     LIMITS,
@@ -352,6 +353,20 @@ def test_open_cell_limit() -> None:
     assert "Open cells: 1, 2, 3, 4." in refused.content
     response.finish()
     # Other responses are not limited by this one's cells.
+    assert _details(Response().run("1\n")).status == "completed"
+
+
+def test_running_cell_limit_is_process_wide(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cells_module, "_running_cells", cells_module._RunningCells(1))
+    first = Response()
+    first.run("import asyncio\nyield_control()\nawait asyncio.sleep(30)\n")
+    refused = Response().run("1\n")
+    assert refused.is_error
+    assert refused.content == BUSY_MESSAGE
+    first.finish()
+    # The ended cell's driver gives its place back.
+    until(lambda: cells_module._running_cells.acquire())
+    cells_module._running_cells.release()
     assert _details(Response().run("1\n")).status == "completed"
 
 

@@ -92,9 +92,9 @@ BUSY_MESSAGE = "The code sandbox is busy. Try again, or answer without code."
 # Tool calls of one program that run at the same time, each on its own thread.
 # Later calls wait in order for a free slot.
 MAX_CONCURRENT_TOOL_CALLS = 16
-# Threads of tool calls of all programs in the server process. Cells are bounded
-# per response (cells.MAX_OPEN_CELLS), not per process, so this bounds their
-# threads. Programs that want threads share them equally. A call that finds no
+# Threads of tool calls of all programs in the server process
+# (cells.MAX_RUNNING_CELLS bounds the programs). Programs that want threads share
+# them equally. A call that finds no
 # thread within its program's share waits in its program's queue. A call that
 # ignores cancellation keeps its thread until it returns.
 MAX_TOOL_CALL_THREADS = 192
