@@ -18,9 +18,9 @@ from onyx.llm.model_response import (
 from onyx.prompts.chat_prompts import REQUIRE_CITATION_GUIDANCE
 from onyx.prompts.tool_prompts import (
     CODE_MODE_GUIDANCE,
-    CODE_MODE_INTERNAL_SEARCH_GUIDANCE,
     CODE_MODE_SEARCH_USAGE,
     INTERNAL_SEARCH_GUIDANCE,
+    INTERNAL_SEARCH_USES,
     TOOL_DESCRIPTION_SEARCH_GUIDANCE,
 )
 from onyx.server.query_and_chat.chat_backend import get_chat_session
@@ -163,7 +163,7 @@ def test_code_mode_citations_stream_save_reload_and_continue(
         if isinstance(message, SystemMessage)
     )
     assert CODE_MODE_GUIDANCE in system
-    assert CODE_MODE_INTERNAL_SEARCH_GUIDANCE in system
+    assert INTERNAL_SEARCH_USES in system
     assert INTERNAL_SEARCH_GUIDANCE not in system
     assert TOOL_DESCRIPTION_SEARCH_GUIDANCE in system
     # The real search tool's stub asks for one call per information need.

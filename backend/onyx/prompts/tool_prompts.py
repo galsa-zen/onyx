@@ -25,7 +25,7 @@ Call tools from Python programs with `execute_code`; its description lists the f
 """.lstrip()
 
 
-_INTERNAL_SEARCH_USES = """
+INTERNAL_SEARCH_USES = """
 ## internal_search
 Use the `internal_search` tool to search connected applications for information. Some examples of when to use `internal_search` include:
 - Internal information: any time where there may be some information stored in internal applications that could help better answer the query.
@@ -36,9 +36,8 @@ Use the `internal_search` tool to search connected applications for information.
 
 # Code mode programs call internal_search as a function; its stub carries the
 # batching note (CODE_MODE_SEARCH_USAGE), so it omits the query limit.
-CODE_MODE_INTERNAL_SEARCH_GUIDANCE = _INTERNAL_SEARCH_USES
 INTERNAL_SEARCH_GUIDANCE = (
-    _INTERNAL_SEARCH_USES
+    INTERNAL_SEARCH_USES
     + "Never provide more than 3 queries at once to `internal_search`.\n"
 )
 
