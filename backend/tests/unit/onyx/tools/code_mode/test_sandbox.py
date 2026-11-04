@@ -2,6 +2,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import cast
 
@@ -593,7 +594,7 @@ def test_a_dump_that_cannot_fit_is_skipped(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_each_waiting_program_claims_one_holder() -> None:
-    demand = sandbox._WorkerDemand()
+    demand = sandbox._WorkerDemand(2)
     woken: list[str] = []
 
     def first() -> None:
@@ -605,13 +606,80 @@ def test_each_waiting_program_claims_one_holder() -> None:
     with demand.holding(first), demand.holding(second):
         with demand.waiting():
             assert woken == ["first"]
-            assert demand.claimed(first) and not demand.claimed(second)
             # A repeated claim adds none while the claim stands.
             demand.claim()
             assert woken == ["first"]
-        # A new waiter claims the other holder.
+        # The waiter left before the holder gave up: the claim is withdrawn.
+        assert not demand.gives_up(first)
         with demand.waiting(), demand.waiting():
-            assert woken == ["first", "second"]
+            assert woken == ["first", "first", "second"]
+            assert demand.gives_up(first) and demand.gives_up(second)
+
+
+def _slow_counted_dumps(monkeypatch: pytest.MonkeyPatch, seconds: float) -> list[int]:
+    dumps: list[int] = []
+    suspend = sandbox._suspend
+
+    def slow_dump(
+        run: sandbox._Run, waiting: sandbox._Waiting
+    ) -> sandbox._Suspended | None:
+        dumps.append(1)
+        time.sleep(seconds)
+        return suspend(run, waiting)
+
+    monkeypatch.setattr(sandbox, "_suspend", slow_dump)
+    return dumps
+
+
+@contextmanager
+def _holders(
+    demand: sandbox._WorkerDemand, pool: Monty, holders: int
+) -> Iterator[list[Ran]]:
+    """Run `holders` programs that keep their worker while a tool runs."""
+    results: list[Ran] = []
+    threads = [
+        threading.Thread(
+            target=lambda: results.append(
+                run("print(await slow(seconds=3))\n", pool=pool)
+            )
+        )
+        for _ in range(holders)
+    ]
+    for thread in threads:
+        thread.start()
+    until(lambda: len(demand._holders) == holders)
+    yield results
+    for thread in threads:
+        thread.join()
+
+
+def test_a_waiting_program_dumps_one_holder(
+    monkeypatch: pytest.MonkeyPatch, two_workers: Monty
+) -> None:
+    demand = sandbox._WorkerDemand(2)
+    monkeypatch.setattr(sandbox, "_worker_demand", demand)
+    # The dump outlasts the waiter's checkout retries.
+    dumps = _slow_counted_dumps(monkeypatch, 3 * sandbox.CHECKOUT_POLL_SECONDS)
+    with _holders(demand, two_workers, 2) as results:
+        assert run("print(1)\n", pool=two_workers).stdout == "1\n"
+    assert [result.stdout for result in results] == ["done\n", "done\n"]
+    assert dumps == [1]
+
+
+def test_a_program_that_finds_every_worker_busy_claims_one_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    demand = sandbox._WorkerDemand(1)
+    monkeypatch.setattr(sandbox, "_worker_demand", demand)
+    dumps = _slow_counted_dumps(monkeypatch, 0)
+    with Monty(min_processes=1, max_processes=1, checkout_timeout=2) as pool:
+        with _holders(demand, pool, 1) as results:
+            started = time.monotonic()
+            assert run("print(1)\n", pool=pool).stdout == "1\n"
+            # Far less than the pool's checkout timeout.
+            assert time.monotonic() - started < 1.5
+    assert [result.stdout for result in results] == ["done\n"]
+    assert dumps == [1]
 
 
 def test_program_state_and_store_survive_a_released_wait() -> None:

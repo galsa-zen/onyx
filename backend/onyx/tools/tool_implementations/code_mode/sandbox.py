@@ -383,20 +383,53 @@ _tool_call_threads = _ToolCallThreads(MAX_TOOL_CALL_THREADS)
 
 
 class _WorkerDemand:
-    """Programs that wait for a free sandbox worker, and holders: programs that
-    keep their worker while they wait on their tool calls.
+    """The sandbox workers this process has checked out, the programs that wait
+    for one, and holders: programs that keep their worker while they wait on
+    their tool calls.
 
     Each waiting program claims one holder, which gives up its worker; the other
-    holders keep theirs. A waiting program claims again each time its checkout
-    times out, so a claim that freed no worker for it is replaced.
+    holders keep theirs. A claim counts until its holder has returned its worker,
+    or kept it because its dump does not fit. A waiting program claims again each
+    time its checkout times out, so a claim that freed no worker for it is
+    replaced. When a program stops waiting, claims beyond the programs still
+    waiting are withdrawn from holders that have not given up yet.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, workers: int) -> None:
         self._lock = threading.Lock()
+        self._workers = workers
+        self._busy = 0
         self._waiting = 0
-        # Wake-ups of the holders, oldest first.
+        # Wake-ups of the holders that keep their worker, oldest first.
         self._holders: dict[Callable[[], None], None] = {}
+        # Claimed holders, also those that gave up and still have the worker.
         self._claimed: set[Callable[[], None]] = set()
+
+    @property
+    def all_busy(self) -> bool:
+        with self._lock:
+            return self._busy >= self._workers
+
+    @contextmanager
+    def worker(
+        self, session: MontySession, wake: Callable[[], None]
+    ) -> Iterator[MontySession]:
+        """Check out the session's worker; raises TimeoutError when none is free.
+
+        The claim on the program ends once its worker is back in the pool.
+        """
+        checked_out = False
+        try:
+            with session:
+                with self._lock:
+                    self._busy += 1
+                checked_out = True
+                yield session
+        finally:
+            if checked_out:
+                with self._lock:
+                    self._busy -= 1
+                    self._claimed.discard(wake)
 
     @contextmanager
     def waiting(self) -> Iterator[None]:
@@ -408,6 +441,9 @@ class _WorkerDemand:
         finally:
             with self._lock:
                 self._waiting -= 1
+                withdrawable = [h for h in self._claimed if h in self._holders]
+                excess = len(self._claimed) - self._waiting
+                self._claimed.difference_update(withdrawable[: max(0, excess)])
 
     def claim(self) -> None:
         """Claim an unclaimed holder while fewer are claimed than programs wait."""
@@ -420,10 +456,19 @@ class _WorkerDemand:
             self._claimed.add(holder)
         holder()
 
-    def claimed(self, wake: Callable[[], None]) -> bool:
-        """Whether the holder of `wake` must give up its worker."""
+    def gives_up(self, wake: Callable[[], None]) -> bool:
+        """Whether the holder of `wake` is claimed. A claimed holder stops
+        holding; its claim counts until it returns or keeps its worker."""
         with self._lock:
-            return wake in self._claimed
+            if wake not in self._claimed:
+                return False
+            self._holders.pop(wake, None)
+            return True
+
+    def kept(self, wake: Callable[[], None]) -> None:
+        """The program that gave up its worker keeps it: its dump does not fit."""
+        with self._lock:
+            self._claimed.discard(wake)
 
     @contextmanager
     def holding(self, wake: Callable[[], None]) -> Iterator[None]:
@@ -434,8 +479,10 @@ class _WorkerDemand:
             yield
         finally:
             with self._lock:
-                self._holders.pop(wake, None)
-                self._claimed.discard(wake)
+                # A holder that did not give up drops a claim it had not seen.
+                if wake in self._holders:
+                    del self._holders[wake]
+                    self._claimed.discard(wake)
 
 
 class _SuspendedBytes:
@@ -465,7 +512,7 @@ class _SuspendedBytes:
             metrics.SUSPENDED_BYTES.dec(size)
 
 
-_worker_demand = _WorkerDemand()
+_worker_demand = _WorkerDemand(MAX_SANDBOX_PROCESSES)
 _suspended_bytes = _SuspendedBytes(MAX_SUSPENDED_BYTES)
 
 
@@ -701,7 +748,7 @@ class _Run:
                 self.start_queued()
                 if any(self._finished(call_id) for call_id in call_ids):
                     return True
-                if yield_worker and _worker_demand.claimed(self.wake.set):
+                if yield_worker and _worker_demand.gives_up(self.wake.set):
                     return False
                 timeout = min(wakeup, self.deadline) - time.monotonic()
                 self.wake.wait(None if math.isinf(timeout) else max(0.0, timeout))
@@ -924,31 +971,49 @@ def _functions_module(run: _Run, stubs: str) -> ExternalModule:
 
 @contextmanager
 def _checkout(
-    pool: Monty, run: _Run, *, resumed: bool, stubs: str
+    pool: Monty,
+    run: _Run,
+    *,
+    resumed: bool,
+    stubs: str,
+    limits: ResourceLimits,
+    functions: ExternalModule,
 ) -> Iterator[MontySession]:
     """Check out a worker; stop waiting once the run is cancelled or late.
 
     Raises `_Aborted` when the run stops. A new program raises TimeoutError when
     no worker is free within CHECKOUT_TIMEOUT_SECONDS; a resumed one waits until
-    its lifetime ends. While it waits, programs that keep a worker give theirs up.
+    its lifetime ends. It waits at once when every worker is checked out. While
+    it waits, programs that keep a worker give theirs up.
     """
     give_up = math.inf if resumed else time.monotonic() + CHECKOUT_TIMEOUT_SECONDS
     with ExitStack() as stack:
         with ExitStack() as demand:
             waiting = False
+
+            def wait() -> None:
+                nonlocal waiting
+                demand.enter_context(_worker_demand.waiting())
+                demand.enter_context(
+                    metrics.PROGRAMS_WAITING_FOR_WORKER.track_inprogress()
+                )
+                waiting = True
+
             while True:
                 run.check()
+                if not waiting and _worker_demand.all_busy:
+                    wait()
                 session = pool.checkout(
                     script_name=SCRIPT_NAME,
-                    limits=_resource_limits(run.limits),
+                    limits=limits,
                     type_check=not resumed,
                     type_check_stubs=None if resumed else stubs,
                     type_check_format="concise",
                     os_policy=_OS_POLICY,
-                    external_modules={FUNCTIONS_MODULE: _functions_module(run, stubs)},
+                    external_modules={FUNCTIONS_MODULE: functions},
                 )
                 try:
-                    stack.enter_context(session)
+                    stack.enter_context(_worker_demand.worker(session, run.wake.set))
                     stack.enter_context(metrics.SANDBOX_WORKERS_BUSY.track_inprogress())
                     break
                 except TimeoutError:
@@ -957,11 +1022,7 @@ def _checkout(
                     if waiting:
                         _worker_demand.claim()
                     else:
-                        demand.enter_context(_worker_demand.waiting())
-                        demand.enter_context(
-                            metrics.PROGRAMS_WAITING_FOR_WORKER.track_inprogress()
-                        )
-                        waiting = True
+                        wait()
         yield session
 
 
@@ -1025,13 +1086,20 @@ def execute_program(
             unawaited_calls=run.unawaited_calls() if status == "completed" else (),
         )
 
+    resource_limits = _resource_limits(limits)
+    functions = _functions_module(run, stubs)
     # A dumped program that waits for its calls without a worker.
     suspended: _Suspended | None = None
     try:
         with cancellation.on_cancel(run.wake.set):
             while True:
                 with _checkout(
-                    pool(), run, resumed=suspended is not None, stubs=stubs
+                    pool(),
+                    run,
+                    resumed=suspended is not None,
+                    stubs=stubs,
+                    limits=resource_limits,
+                    functions=functions,
                 ) as session:
                     run.start_clock()
                     loading, suspended = suspended, None
@@ -1047,6 +1115,7 @@ def execute_program(
                             suspended = _suspend(run, step)
                             if suspended is not None:
                                 break
+                            _worker_demand.kept(run.wake.set)
                             run.wait_for_any(step.call_ids)
                         step = _segment(session, run, partial(_resumed, step))
                 if not isinstance(step, _Waiting):
