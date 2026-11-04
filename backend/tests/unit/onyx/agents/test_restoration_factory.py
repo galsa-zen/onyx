@@ -225,40 +225,41 @@ def _suspended(agent: ChatAgent, state: dict[str, JsonValue]) -> ExecutionCheckp
     )
 
 
-def test_saved_chat_state_with_extra_fields_restores_and_offers_tools() -> None:
-    llm = ScriptedLLM([Delta(content="done")])
-    original = _chat_agent(llm)
-    # Saved rows can hold fields that the feature state does not define.
-    state = {**original.capture_state().model_dump(mode="json"), "ran_image_gen": True}
-    rebuilt = restore_chat_agent(
-        _suspended(original, state), llm=llm, tools=[EchoTool()], user_identity=None
-    )
-    assert isinstance(rebuilt, ChatAgent)
-    rebuilt.restore_state(state)
-    run_agent(rebuilt, max_steps=3, messages=[UserMessage(content="Go")])
-    assert _offered(llm) == ([EchoTool().name], ToolChoiceOptions.REQUIRED)
-
-
 @pytest.mark.parametrize(
-    ("saved_code_mode", "saved_key", "offered", "choice"),
+    ("saved_code_mode", "saved_key", "extra", "offered", "choice"),
     [
         # Code mode ignores the forced tool.
-        (True, True, [CodeModeTool.NAME, WAIT_CODE_TOOL_NAME], ToolChoiceOptions.AUTO),
-        (False, True, [EchoTool().name], ToolChoiceOptions.REQUIRED),
+        (
+            True,
+            True,
+            {},
+            [CodeModeTool.NAME, WAIT_CODE_TOOL_NAME],
+            ToolChoiceOptions.AUTO,
+        ),
+        (False, True, {}, [EchoTool().name], ToolChoiceOptions.REQUIRED),
         # A saved state without the field restores without code mode.
-        (False, False, [EchoTool().name], ToolChoiceOptions.REQUIRED),
+        (False, False, {}, [EchoTool().name], ToolChoiceOptions.REQUIRED),
+        # Saved rows can hold fields that the feature state does not define.
+        (
+            False,
+            True,
+            {"ran_image_gen": True},
+            [EchoTool().name],
+            ToolChoiceOptions.REQUIRED,
+        ),
     ],
 )
 def test_restored_chat_keeps_the_saved_code_mode(
     saved_code_mode: bool,
     saved_key: bool,
+    extra: dict[str, JsonValue],
     offered: list[str],
     choice: ToolChoiceOptions,
 ) -> None:
     # Restoration reads only the saved state, never the deployment setting.
     llm = ScriptedLLM([Delta(content="done")])
     original = _chat_agent(llm, code_mode=saved_code_mode)
-    state = original.capture_state().model_dump(mode="json")
+    state = {**original.capture_state().model_dump(mode="json"), **extra}
     if not saved_key:
         del state["code_mode"]
     rebuilt = restore_chat_agent(

@@ -155,8 +155,8 @@ def test_code_mode_citations_stream_save_reload_and_continue(
         )
         parts = send(session.id, user, first, "How did Q2 revenue change?")
     assert final_answer(parts).startswith("Revenue grew")
-    # The prompt keeps the guidance of the tools inside programs, with the stop
-    # rule and without the query limit of a direct search call.
+    # The prompt keeps the guidance of the tools inside programs, without the
+    # query limit of a direct search call.
     system = "\n".join(
         message.content
         for message in first.requests[0]["prompt"]

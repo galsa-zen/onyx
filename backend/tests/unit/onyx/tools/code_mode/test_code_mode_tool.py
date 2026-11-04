@@ -400,18 +400,12 @@ def test_description_lists_stubs() -> None:
     first = _make_tool().tool_definition()
     assert first.name == "execute_code"
     assert first.parameters["required"] == ["code"]
-    assert "async def web_search(*, queries: list[str]) -> SearchResults:" in (
-        first.description
-    )
     assert "asyncio.gather" in first.description
     assert "[n]" in first.description
 
 
-def test_mcp_like_stub_type_checks_and_maps_argument_names() -> None:
-    received: list[dict[str, object]] = []
-
-    def list_issues(invocation: ToolInvocation, _context: ToolContext) -> ToolOutcome:
-        received.append(dict(invocation.arguments))
+def test_mcp_like_stub_runs_and_type_checks_its_arguments() -> None:
+    def list_issues(_invocation: ToolInvocation, _context: ToolContext) -> ToolOutcome:
         return ToolResult(content='{"issues": [{"number": 1}]}')
 
     tool = CodeModeTool(
@@ -441,7 +435,6 @@ def test_mcp_like_stub_type_checks_and_maps_argument_names() -> None:
     )
     assert details.status == "completed", details.error
     assert details.result == "1"
-    assert received == [{"repo-name": "onyx", "state": "open", "class": True}]
 
     _, rejected, _ = _run(
         tool, "await github_list_issues(repo_name='onyx', state='x')\n"

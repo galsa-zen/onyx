@@ -203,6 +203,13 @@ def test_live_code_mode_renders_nested_calls_under_the_code_block() -> None:
         if isinstance(packet.obj, packets.SearchToolDocumentsDelta)
     ]
     assert documents == [[DOC_A, DOC_B]]
+    # The nested custom call renders its saved result.
+    [custom] = [
+        packet.obj
+        for packet in output
+        if isinstance(packet.obj, packets.CustomToolDelta)
+    ]
+    assert custom.data == {"value": "found"}
     # Packets after completion are dropped; completion is idempotent.
     assert renderer.update(CodeModeStdout(text="late")) == []
     assert renderer.complete(_result_message()) == []
@@ -302,7 +309,7 @@ def test_nested_artifacts_belong_to_the_code_mode_call() -> None:
     assert history.tool_calls[0].generated_files == [file]
 
 
-def test_direct_search_guidance_keeps_the_query_limit_and_stop_rule() -> None:
+def test_direct_search_prompt_has_the_query_limit_and_no_code_mode_guidance() -> None:
     # Code mode guidance is checked through a real chat in
     # external_dependency_unit/answer/test_code_mode_citations.py.
     search = MagicMock(spec=SearchTool)
@@ -311,19 +318,6 @@ def test_direct_search_guidance_keeps_the_query_limit_and_stop_rule() -> None:
     assert CODE_MODE_GUIDANCE not in direct
     assert INTERNAL_SEARCH_GUIDANCE in direct
     assert TOOL_DESCRIPTION_SEARCH_GUIDANCE in direct
-
-
-def test_nested_custom_call_renders_its_saved_result() -> None:
-    # The nested renderer receives the saved call as a ToolResult.
-    renderer = tool_renderer(_call(), PLACEMENT)
-    renderer.start()
-    output = renderer.update(CodeModeCallFinished(call=CUSTOM_CALL))
-    delta = next(
-        packet.obj
-        for packet in output
-        if isinstance(packet.obj, packets.CustomToolDelta)
-    )
-    assert delta.data == {"value": "found"}
 
 
 class _DirectOnlyTool(EchoTool):
