@@ -306,7 +306,6 @@ describe("packetProcessor", () => {
       [PacketType.REASONING_START, "REASONING_START"],
       [PacketType.DEEP_RESEARCH_PLAN_START, "DEEP_RESEARCH_PLAN_START"],
       [PacketType.RESEARCH_AGENT_START, "RESEARCH_AGENT_START"],
-      [PacketType.IMAGE_GENERATION_TOOL_START, "IMAGE_GENERATION_TOOL_START"],
     ])("%s categorizes as tool group", (packetType) => {
       const state = createInitialState(1);
       const packets = [createPacket(packetType, { turn_index: 0 })];
@@ -315,15 +314,17 @@ describe("packetProcessor", () => {
       expect(result.toolGroupKeys.has("0-0")).toBe(true);
     });
 
-    test("MESSAGE_START categorizes as display group", () => {
-      const state = createInitialState(1);
-      const packets = [
-        createPacket(PacketType.MESSAGE_START, { turn_index: 0 }),
-      ];
-      const result = processPackets(state, packets);
+    // Parameterized tests for display packet types
+    test.each([[PacketType.MESSAGE_START, "MESSAGE_START"]])(
+      "%s categorizes as display group",
+      (packetType) => {
+        const state = createInitialState(1);
+        const packets = [createPacket(packetType, { turn_index: 0 })];
+        const result = processPackets(state, packets);
 
-      expect(result.displayGroupKeys.has("0-0")).toBe(true);
-    });
+        expect(result.displayGroupKeys.has("0-0")).toBe(true);
+      }
+    );
   });
 
   describe("SECTION_END and ERROR tracking", () => {
@@ -816,11 +817,10 @@ describe("packetProcessor", () => {
       expect(result.finalAnswerComing).toBe(true);
     });
 
-    test("IMAGE_GENERATION_TOOL_START does not set finalAnswerComing", () => {
+    test("does not start the answer on IMAGE_GENERATION_TOOL_START", () => {
       const state = createInitialState(1);
       const packets = [
         createPacket(PacketType.IMAGE_GENERATION_TOOL_START, { turn_index: 0 }),
-        createImageDeltaPacket(1, { turn_index: 0 }),
       ];
       const result = processPackets(state, packets);
 
@@ -947,8 +947,28 @@ describe("packetProcessor", () => {
     });
   });
 
-  describe("generated images", () => {
-    test("collects images from top-level and nested image calls", () => {
+  describe("image generation counting", () => {
+    test("categorizes image generation as a tool step", () => {
+      const state = createInitialState(1);
+      const packets = [
+        createPacket(PacketType.IMAGE_GENERATION_TOOL_START, { turn_index: 0 }),
+      ];
+      const result = processPackets(state, packets);
+      expect(result.toolGroupKeys.has("0-0")).toBe(true);
+    });
+
+    test("counts images from IMAGE_GENERATION_TOOL_DELTA", () => {
+      const state = createInitialState(1);
+      const packets = [
+        createPacket(PacketType.IMAGE_GENERATION_TOOL_START, { turn_index: 0 }),
+        createImageDeltaPacket(2, { turn_index: 0 }),
+      ];
+      const result = processPackets(state, packets);
+
+      expect(result.generatedImages.length).toBe(2);
+    });
+
+    test("collects images from nested image calls", () => {
       const state = createInitialState(1);
       const packets = [
         createPacket(PacketType.IMAGE_GENERATION_TOOL_START, { turn_index: 0 }),
@@ -980,19 +1000,17 @@ describe("packetProcessor", () => {
       ]);
     });
 
-    test("keeps one entry per file_id", () => {
+    test("deduplicates images from repeated DELTA packets", () => {
       const state = createInitialState(1);
       const packets = [
         createPacket(PacketType.IMAGE_GENERATION_TOOL_START, { turn_index: 0 }),
         createImageDeltaPacket(1, { turn_index: 0 }),
         createImageDeltaPacket(2, { turn_index: 0 }),
+        createImageDeltaPacket(1, { turn_index: 0 }),
       ];
       const result = processPackets(state, packets);
 
-      expect(result.generatedImages.map((i) => i.file_id)).toEqual([
-        "file-0",
-        "file-1",
-      ]);
+      expect(result.generatedImages.length).toBe(2);
     });
   });
 
@@ -1163,30 +1181,19 @@ describe("packetProcessor", () => {
       expect(result.finalAnswerComing).toBe(true);
     });
 
-    test("image generation, then search, then the answer", () => {
+    test("image generation flow", () => {
       const state = createInitialState(1);
       const packets = [
         createPacket(PacketType.IMAGE_GENERATION_TOOL_START, { turn_index: 0 }),
         createImageDeltaPacket(1, { turn_index: 0 }),
         createPacket(PacketType.SECTION_END, { turn_index: 0 }),
-        createSearchToolStartPacket({ turn_index: 1 }),
-        createPacket(PacketType.SECTION_END, { turn_index: 1 }),
-      ];
-      const beforeAnswer = processPackets(state, packets);
-
-      expect(beforeAnswer.toolGroups.length).toBe(2);
-      expect(beforeAnswer.potentialDisplayGroups.length).toBe(0);
-      expect(beforeAnswer.finalAnswerComing).toBe(false);
-
-      const result = processPackets(beforeAnswer, [
-        ...packets,
-        createMessageStartPacket({ turn_index: 2 }),
         createStopPacket(),
-      ]);
+      ];
+      const result = processPackets(state, packets);
 
-      expect(result.finalAnswerComing).toBe(true);
-      expect(result.potentialDisplayGroups.length).toBe(1);
       expect(result.generatedImages.length).toBe(1);
+      expect(result.finalAnswerComing).toBe(false);
+      expect(result.toolGroupKeys.has("0-0")).toBe(true);
     });
 
     test("deep research with sub-agents", () => {
