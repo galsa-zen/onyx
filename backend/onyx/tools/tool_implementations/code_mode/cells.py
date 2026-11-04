@@ -878,11 +878,12 @@ class CodeCell:
         if self._pending_stdout_chars >= STDOUT_FLUSH_CHARS:
             self._flush_stdout()
         elif self._flush_timer is None:
-            self._flush_timer = threading.Timer(
-                STDOUT_FLUSH_SECONDS, self._flush_stdout_later
+            timer = threading.Timer(
+                STDOUT_FLUSH_SECONDS, lambda: self._flush_stdout_later(timer)
             )
-            self._flush_timer.daemon = True
-            self._flush_timer.start()
+            timer.daemon = True
+            self._flush_timer = timer
+            timer.start()
 
     def _flush_stdout(self) -> None:
         """Send the buffered printed text to the attached observer."""
@@ -896,10 +897,12 @@ class CodeCell:
         self._pending_stdout_chars = 0
         self._publish(CodeModeStdout(text=text))
 
-    def _flush_stdout_later(self) -> None:
+    def _flush_stdout_later(self, timer: threading.Timer) -> None:
         with self._lock:
-            self._flush_timer = None
-            self._flush_stdout()
+            # A timer that fired while a flush held the lock is stale; the
+            # current timer owns the buffered text.
+            if self._flush_timer is timer:
+                self._flush_stdout()
 
     def _send(self, details: CellEvent) -> None:
         with self._lock:
