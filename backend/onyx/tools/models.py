@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Literal, Self
 from uuid import UUID
@@ -350,10 +349,11 @@ class CodeModeExposure(str, Enum):
     DEFERRED = "deferred"
 
 
-@dataclass(frozen=True)
-class CodeModeFunctionName:
+class CodeModeFunctionName(BaseModel):
     """A tool's code mode function name before it becomes a Python identifier:
     `<namespace>__<name>`, or `name` without a namespace."""
+
+    model_config = ConfigDict(frozen=True)
 
     name: str
     # A group of tools, such as the MCP server of an MCP tool.
@@ -377,9 +377,10 @@ class CodeModeResultKind(str, Enum):
     MCP = "mcp"
 
 
-@dataclass(frozen=True)
-class CodeModeResultSpec:
+class CodeModeResultSpec(BaseModel):
     """The value a tool returns to a code mode program, and its stub type."""
+
+    model_config = ConfigDict(frozen=True)
 
     kind: CodeModeResultKind
     # The stub's return annotation; the model's name when unset, else Any.
@@ -392,7 +393,7 @@ class CodeModeResultSpec:
     model: type[BaseModel] | None = None
     # JSON Schema of the value, from the tool's server. The stub types the value
     # from it, and declares a top-level object as a TypedDict.
-    schema: dict[str, JsonValue] | None = None
+    output_schema: dict[str, JsonValue] | None = None
     # Docstring note on the returned value.
     returns: str | None = None
     # Docstring note on how a program should call the tool, such as batching.

@@ -2,10 +2,12 @@
 
 import json
 from collections.abc import Callable, Iterable
+from concurrent.futures import Future
 from functools import cached_property
 from typing import Annotated, Literal, Self, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
+from pydantic_monty import FunctionSnapshot, FutureSnapshot
 
 from onyx.context.search.models import SearchDocsResponse
 from onyx.llm.models import Message, ToolResultMessage
@@ -255,3 +257,117 @@ class CodeModeStdout(BaseModel):
 CellEvent = (
     CodeModeCallStarted | CodeModeCallProgress | CodeModeCallFinished | CodeModeStdout
 )
+
+
+# Compute time one program may use. The sandbox pool is shared by every program,
+# so its parent-side request timeout backstops this limit for all of them.
+MAX_CPU_SECONDS = 30.0
+
+
+class SandboxLimits(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    # Wall clock for one program, including the time its tool calls take.
+    lifetime_seconds: float = 900.0
+    max_tool_calls: int = 100
+    # Characters of printed text, the result and the error collected for one
+    # observation, cut in the middle; bounds host memory and the text that the
+    # output budget tokenizes. About 16 times the default output budget.
+    max_output_chars: int = 640_000
+    max_memory_bytes: int = 128 * 1024 * 1024
+    # Compute time inside the sandbox; time spent waiting for tools does not count.
+    # At most MAX_CPU_SECONDS, which the shared pool's request timeout backstops.
+    max_cpu_seconds: float = MAX_CPU_SECONDS
+
+
+class ExternalCall(BaseModel):
+    """A tool function call made by the program."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # Order of the call within one execution, from 0.
+    index: int
+    function_name: str
+    kwargs: dict[str, object]
+
+
+class SandboxResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    # result and error each hold at most `max_output_chars`, cut in the middle.
+    status: SandboxStatus
+    # repr() of the final expression, when it is not None.
+    result: str | None = None
+    error: str | None = None
+    duration_seconds: float = 0.0
+    # Non-fatal type checker diagnostics, kept for failed executions.
+    type_check_notes: str | None = None
+    # The program's store() writes take effect: it completed, or stopped at an
+    # exception it raised. A program that was stopped, timed out or did not start
+    # does not commit.
+    commits_store: bool = False
+    # Tool calls not finished when the program completed without awaiting them.
+    # They are not waited for; the caller cancels them.
+    unawaited_calls: tuple[ExternalCall, ...] = ()
+    # Tool calls the program never awaited that were still queued; they never run.
+    unstarted_calls: tuple[ExternalCall, ...] = ()
+
+
+class TypeDiagnostic(BaseModel):
+    """One diagnostic line from the type checker."""
+
+    model_config = ConfigDict(frozen=True)
+
+    code: str
+    message: str
+    line: str
+
+
+class PendingCall(BaseModel):
+    """A tool call of the program that has not returned its result to it."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    external: ExternalCall
+    # The call's thread; None while the call waits in the queue.
+    future: Future[object] | None = None
+
+
+class ProgramWaiting(BaseModel):
+    """A program waiting on tool calls or sleeps, on its worker."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    state: FutureSnapshot | FunctionSnapshot
+
+    @property
+    def call_ids(self) -> list[int]:
+        state = self.state
+        if isinstance(state, FunctionSnapshot):
+            return [state.call_id]
+        return list(state.pending_call_ids)
+
+
+class ProgramSuspended(BaseModel):
+    """A waiting program dumped so that its worker could be returned; its bytes
+    count against MAX_SUSPENDED_BYTES until it is loaded."""
+
+    model_config = ConfigDict(frozen=True)
+
+    snapshot: bytes
+    call_ids: list[int]
+
+
+class ProgramCompleted(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    output: object
+
+
+class ProgramStopped(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    status: SandboxStatus
+    error: str
+    # The program raised an exception that it did not catch.
+    raised: bool = False

@@ -14,11 +14,13 @@ from onyx.tools.tool_implementations.code_mode.cells import (
     Program,
     SequentialCalls,
 )
+from onyx.tools.tool_implementations.code_mode.models import (
+    SandboxLimits,
+)
 from onyx.tools.tool_implementations.code_mode.prompt import (
     WAIT_CODE_DESCRIPTION,
     code_mode_description,
 )
-from onyx.tools.tool_implementations.code_mode.sandbox import SandboxLimits
 from onyx.tools.tool_implementations.code_mode.stubs import build_tool_stubs
 
 # How long a call waits for the cell before it returns the output so far.

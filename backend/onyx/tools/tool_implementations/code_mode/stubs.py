@@ -630,7 +630,7 @@ def build_tool_stubs(tools: Sequence[Tool]) -> ToolStubs:
     taken = {*declared_types, *named, *_RESERVED_FUNCTION_NAMES}
     functions: dict[str, ToolFunction] = {}
     for name, tool in named.items():
-        schema = tool.code_mode_result.schema
+        schema = tool.code_mode_result.output_schema
         functions[name] = tool_function(
             name,
             tool,

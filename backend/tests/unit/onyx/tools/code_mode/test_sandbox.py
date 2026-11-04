@@ -3,7 +3,6 @@ import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import cast
 
 import pytest
@@ -14,15 +13,19 @@ from pydantic_monty import FunctionSnapshot, Monty
 from onyx.llm.cancellation import AgentCancelled, CancellationSignal
 from onyx.tools.tool_implementations.code_mode import sandbox
 from onyx.tools.tool_implementations.code_mode.cells import StdoutCollector
+from onyx.tools.tool_implementations.code_mode.models import (
+    ExternalCall,
+    ProgramSuspended,
+    ProgramWaiting,
+    SandboxLimits,
+    SandboxResult,
+    TypeDiagnostic,
+)
 from onyx.tools.tool_implementations.code_mode.sandbox import (
     BUSY_MESSAGE,
     CRASH_MESSAGE,
     YIELD_CONTROL_STUB,
-    ExternalCall,
     ExternalCallHandler,
-    SandboxLimits,
-    SandboxResult,
-    TypeDiagnostic,
     execute_program,
     is_fatal_diagnostic,
     parse_type_diagnostics,
@@ -99,7 +102,6 @@ class Recorder:
         return [{"title": f"About {call.kwargs['query']}"}]
 
 
-@dataclass(frozen=True)
 class Ran(SandboxResult):
     """A program's result with what a cell collects around it: the printed text,
     the store() writes, and the number of tool calls that started."""
@@ -149,7 +151,7 @@ def run(
         **({"pool": lambda: pool} if pool is not None else {}),
     )
     return Ran(
-        **vars(result),
+        **dict(result),
         stdout=collector.text,
         store_writes=program_store.writes,
         tool_call_count=len(started),
@@ -550,9 +552,7 @@ def test_a_waiting_program_keeps_its_worker_while_no_other_waits(
     dumps: list[int] = []
     suspend = sandbox._suspend
 
-    def counted(
-        run: sandbox._Run, waiting: sandbox._Waiting
-    ) -> sandbox._Suspended | None:
+    def counted(run: sandbox._Run, waiting: ProgramWaiting) -> ProgramSuspended | None:
         dumps.append(1)
         return suspend(run, waiting)
 
@@ -606,7 +606,8 @@ def test_a_dump_that_cannot_fit_is_skipped(monkeypatch: pytest.MonkeyPatch) -> N
         on_print=lambda _text: None,
         on_yield=lambda: None,
     )
-    waiting = sandbox._Waiting(cast(FunctionSnapshot, Snapshot()))
+    # A fake snapshot: skip the isinstance validation.
+    waiting = ProgramWaiting.model_construct(state=cast(FunctionSnapshot, Snapshot()))
     assert sandbox._suspend(run_state, waiting) is None
     assert sandbox._suspend(run_state, waiting) is None
     # The second dump is skipped: the first did not fit.
@@ -641,8 +642,8 @@ def _slow_counted_dumps(monkeypatch: pytest.MonkeyPatch, seconds: float) -> list
     suspend = sandbox._suspend
 
     def slow_dump(
-        run: sandbox._Run, waiting: sandbox._Waiting
-    ) -> sandbox._Suspended | None:
+        run: sandbox._Run, waiting: ProgramWaiting
+    ) -> ProgramSuspended | None:
         dumps.append(1)
         time.sleep(seconds)
         return suspend(run, waiting)

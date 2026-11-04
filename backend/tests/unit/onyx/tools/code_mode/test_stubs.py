@@ -1,5 +1,4 @@
 import json
-from dataclasses import replace
 from uuid import uuid4
 
 import pytest
@@ -88,7 +87,9 @@ def test_built_in_like_search_tool_gets_typed_result() -> None:
 class _BatchedSearchTool(FakeWebSearchTool):
     @property
     def code_mode_result(self) -> CodeModeResultSpec:
-        return replace(super().code_mode_result, usage="Pass all queries in one call.")
+        return super().code_mode_result.model_copy(
+            update={"usage": "Pass all queries in one call."}
+        )
 
 
 def test_usage_note_reaches_the_docstring() -> None:

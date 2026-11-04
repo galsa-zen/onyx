@@ -35,8 +35,6 @@ from onyx.tools.tool_implementations.code_mode.models import (
     CodeModeCallStarted,
     CodeModeExecutionResult,
     CodeModeStdout,
-)
-from onyx.tools.tool_implementations.code_mode.sandbox import (
     SandboxLimits,
     SandboxResult,
 )

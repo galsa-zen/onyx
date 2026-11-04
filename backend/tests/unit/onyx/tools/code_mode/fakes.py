@@ -14,7 +14,9 @@ from onyx.llm.models import ToolDefinition, ToolResult
 from onyx.server.features.mcp.models import MCPServerConnection
 from onyx.tools.interface import Tool
 from onyx.tools.models import CodeModeExposure, ToolContext
-from onyx.tools.tool_implementations.code_mode.sandbox import SandboxLimits
+from onyx.tools.tool_implementations.code_mode.models import (
+    SandboxLimits,
+)
 from onyx.tools.tool_implementations.mcp.mcp_tool import MCPTool
 from onyx.tools.tool_implementations.web_search.web_search_tool import WebSearchTool
 

@@ -162,13 +162,15 @@ class MCPTool(Tool):
 
     @property
     def code_mode_function_name(self) -> CodeModeFunctionName:
-        return CodeModeFunctionName(self._mcp_tool_name, namespace=self.mcp_server.name)
+        return CodeModeFunctionName(
+            name=self._mcp_tool_name, namespace=self.mcp_server.name
+        )
 
     @property
     def code_mode_result(self) -> CodeModeResultSpec:
         return CodeModeResultSpec(
             kind=CodeModeResultKind.MCP,
-            schema=self._output_schema,
+            output_schema=self._output_schema,
             returns=None
             if self._output_schema is not None
             else "The server's result. Structured content and JSON objects or "

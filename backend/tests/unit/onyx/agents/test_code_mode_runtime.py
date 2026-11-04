@@ -48,9 +48,9 @@ from onyx.tools.tool_implementations.code_mode.code_mode_tool import (
 )
 from onyx.tools.tool_implementations.code_mode.models import (
     CodeModeExecutionResult,
+    SandboxLimits,
     StoreCommit,
 )
-from onyx.tools.tool_implementations.code_mode.sandbox import SandboxLimits
 from onyx.tracing.flows import LLMFlow
 from tests.unit.onyx.agents.fakes import EchoTool, FakeModelClient
 from tests.unit.onyx.tools.code_mode.fakes import LIMITS, FakeTool

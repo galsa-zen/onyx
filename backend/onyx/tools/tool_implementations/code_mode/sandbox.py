@@ -9,9 +9,7 @@ import signal
 import threading
 import time
 from collections.abc import Callable, Collection, Iterator, Mapping
-from concurrent.futures import Future
 from contextlib import ExitStack, contextmanager, nullcontext
-from dataclasses import dataclass
 from functools import partial
 from typing import NoReturn
 
@@ -40,7 +38,19 @@ from pydantic_monty import (
 
 from onyx.llm.cancellation import CancellationSignal
 from onyx.server.metrics import code_mode as metrics
-from onyx.tools.tool_implementations.code_mode.models import SandboxStatus
+from onyx.tools.tool_implementations.code_mode.models import (
+    MAX_CPU_SECONDS,
+    ExternalCall,
+    PendingCall,
+    ProgramCompleted,
+    ProgramStopped,
+    ProgramSuspended,
+    ProgramWaiting,
+    SandboxLimits,
+    SandboxResult,
+    SandboxStatus,
+    TypeDiagnostic,
+)
 from onyx.tools.tool_implementations.utils import truncate_output
 from onyx.utils.logger import setup_logger
 from onyx.utils.threadpool_concurrency import start_thread_future
@@ -53,9 +63,6 @@ CHECKOUT_TIMEOUT_SECONDS = 15.0
 # The pool's own checkout timeout. A waiting program retries in steps of this
 # length, so it notices Stop while it waits; the pool has no other wake-up.
 CHECKOUT_POLL_SECONDS = 0.25
-# Compute time one program may use. The pool is shared by every program, so its
-# parent-side request timeout backstops this limit for all of them.
-MAX_CPU_SECONDS = 30.0
 REQUEST_TIMEOUT_SECONDS = MAX_CPU_SECONDS + 15.0
 # Sandbox worker processes per server process. A program that waits on its tools
 # keeps its worker only while no other program waits for one, so 8 workers serve
@@ -156,62 +163,9 @@ _DIAGNOSTIC = re.compile(r"^\S+:\d+:\d+: error\[(?P<code>[\w-]+)\] (?P<message>.
 _FUNCTION_IN_MESSAGE = re.compile(r"function `(?P<name>[\w.]+)`")
 
 
-@dataclass(frozen=True)
-class SandboxLimits:
-    # Wall clock for one program, including the time its tool calls take.
-    lifetime_seconds: float = 900.0
-    max_tool_calls: int = 100
-    # Characters of printed text, the result and the error collected for one
-    # observation, cut in the middle; bounds host memory and the text that the
-    # output budget tokenizes. About 16 times the default output budget.
-    max_output_chars: int = 640_000
-    max_memory_bytes: int = 128 * 1024 * 1024
-    # Compute time inside the sandbox; time spent waiting for tools does not count.
-    # At most MAX_CPU_SECONDS, which the shared pool's request timeout backstops.
-    max_cpu_seconds: float = MAX_CPU_SECONDS
-
-
-@dataclass(frozen=True)
-class ExternalCall:
-    """A tool function call made by the program."""
-
-    # Order of the call within one execution, from 0.
-    index: int
-    function_name: str
-    kwargs: dict[str, object]
-
-
 # Runs on a worker thread. The return value goes to the program; an Exception is
 # raised inside the program.
 ExternalCallHandler = Callable[[ExternalCall], object]
-
-
-@dataclass(frozen=True)
-class SandboxResult:
-    # result and error each hold at most `max_output_chars`, cut in the middle.
-    status: SandboxStatus
-    # repr() of the final expression, when it is not None.
-    result: str | None = None
-    error: str | None = None
-    duration_seconds: float = 0.0
-    # Non-fatal type checker diagnostics, kept for failed executions.
-    type_check_notes: str | None = None
-    # The program's store() writes take effect: it completed, or stopped at an
-    # exception it raised. A program that was stopped, timed out or did not start
-    # does not commit.
-    commits_store: bool = False
-    # Tool calls not finished when the program completed without awaiting them.
-    # They are not waited for; the caller cancels them.
-    unawaited_calls: tuple[ExternalCall, ...] = ()
-    # Tool calls the program never awaited that were still queued; they never run.
-    unstarted_calls: tuple[ExternalCall, ...] = ()
-
-
-@dataclass(frozen=True)
-class TypeDiagnostic:
-    code: str
-    message: str
-    line: str
 
 
 def parse_type_diagnostics(text: str) -> list[TypeDiagnostic]:
@@ -518,15 +472,6 @@ _worker_demand = _WorkerDemand(MAX_SANDBOX_PROCESSES)
 _suspended_bytes = _SuspendedBytes(MAX_SUSPENDED_BYTES)
 
 
-@dataclass
-class _PendingCall:
-    """A tool call of the program that has not returned its result to it."""
-
-    external: ExternalCall
-    # The call's thread; None while the call waits in the queue.
-    future: Future[object] | None = None
-
-
 class _Run:
     """State of one execution: pending tool calls, limits and output."""
 
@@ -570,7 +515,7 @@ class _Run:
         self.started: float | None = None
         self.deadline = math.inf
         # Unfinished tool calls by sandbox call id, in call order.
-        self.calls: dict[int, _PendingCall] = {}
+        self.calls: dict[int, PendingCall] = {}
         # Unfinished sleeps by sandbox call id: the monotonic time each one ends.
         self.sleeps: dict[int, float] = {}
         # Set when a call ends, a tool call thread frees up, or the run is cancelled.
@@ -685,8 +630,8 @@ class _Run:
                     "tool calls per execution."
                 )
             )
-        self.calls[call.call_id] = _PendingCall(
-            ExternalCall(
+        self.calls[call.call_id] = PendingCall(
+            external=ExternalCall(
                 index=self.tool_calls, function_name=name, kwargs=dict(call.kwargs)
             )
         )
@@ -858,43 +803,9 @@ def _watched(run: _Run, pid: int | None) -> Iterator[None]:
             computing = None
 
 
-@dataclass(frozen=True)
-class _Waiting:
-    """A program waiting on tool calls or sleeps, on its worker."""
-
-    state: FutureSnapshot | FunctionSnapshot
-
-    @property
-    def call_ids(self) -> list[int]:
-        state = self.state
-        if isinstance(state, FunctionSnapshot):
-            return [state.call_id]
-        return list(state.pending_call_ids)
-
-
-@dataclass(frozen=True)
-class _Suspended:
-    """A waiting program dumped so that its worker could be returned; its bytes
-    count against MAX_SUSPENDED_BYTES until it is loaded."""
-
-    snapshot: bytes
-    call_ids: list[int]
-
-
-@dataclass(frozen=True)
-class _Completed:
-    output: object
-
-
-@dataclass(frozen=True)
-class _Stopped:
-    status: SandboxStatus
-    error: str
-    # The program raised an exception that it did not catch.
-    raised: bool = False
-
-
-def _start(session: MontySession, code: str, run: _Run) -> SyncSnapshot | _Stopped:
+def _start(
+    session: MontySession, code: str, run: _Run
+) -> SyncSnapshot | ProgramStopped:
     """Type-check and start the program.
 
     Invalid syntax and type errors in calls stop it; other diagnostics become
@@ -907,8 +818,9 @@ def _start(session: MontySession, code: str, run: _Run) -> SyncSnapshot | _Stopp
         diagnostics = parse_type_diagnostics(error.display())
         text = "\n".join(d.line for d in diagnostics) or error.display()
         if any(is_fatal_diagnostic(d, run.callable_names) for d in diagnostics):
-            return _Stopped(
-                "failed", "Type check failed; the program did not run.\n" + text
+            return ProgramStopped(
+                status="failed",
+                error="Type check failed; the program did not run.\n" + text,
             )
         run.type_check_notes = text
         return session.feed_start(
@@ -916,7 +828,9 @@ def _start(session: MontySession, code: str, run: _Run) -> SyncSnapshot | _Stopp
         )
 
 
-def _load(session: MontySession, run: _Run, suspended: _Suspended) -> SyncSnapshot:
+def _load(
+    session: MontySession, run: _Run, suspended: ProgramSuspended
+) -> SyncSnapshot:
     try:
         return session.load_snapshot(
             suspended.snapshot, print_callback=run.print_callback
@@ -928,32 +842,32 @@ def _load(session: MontySession, run: _Run, suspended: _Suspended) -> SyncSnapsh
 def _segment(
     session: MontySession,
     run: _Run,
-    begin: Callable[[], SyncSnapshot | _Stopped],
-) -> _Waiting | _Completed | _Stopped:
+    begin: Callable[[], SyncSnapshot | ProgramStopped],
+) -> ProgramWaiting | ProgramCompleted | ProgramStopped:
     """Run the program on its worker from `begin` until it completes, fails or
     waits."""
     try:
         with _watched(run, session.worker_pid):
             state = begin()
-            if isinstance(state, _Stopped):
+            if isinstance(state, ProgramStopped):
                 return state
             outcome = run.drive(state)
     except MontySyntaxError as error:
-        return _Stopped("failed", error.display())
+        return ProgramStopped(status="failed", error=error.display())
     except MontyRuntimeError as error:
         if _is_compute_limit(error):
-            return _Stopped("timed_out", error.display())
-        return _Stopped("failed", error.display(), raised=True)
+            return ProgramStopped(status="timed_out", error=error.display())
+        return ProgramStopped(status="failed", error=error.display(), raised=True)
     if isinstance(outcome, MontyComplete):
-        return _Completed(output=outcome.output)
-    return _Waiting(outcome)
+        return ProgramCompleted(output=outcome.output)
+    return ProgramWaiting(state=outcome)
 
 
-def _resumed(waiting: _Waiting) -> SyncSnapshot:
+def _resumed(waiting: ProgramWaiting) -> SyncSnapshot:
     return waiting.state
 
 
-def _suspend(run: _Run, waiting: _Waiting) -> _Suspended | None:
+def _suspend(run: _Run, waiting: ProgramWaiting) -> ProgramSuspended | None:
     """Dump a waiting program; None when the dump does not fit MAX_SUSPENDED_BYTES.
 
     The program's last dump size estimates the next, so a dump that cannot fit is
@@ -968,7 +882,7 @@ def _suspend(run: _Run, waiting: _Waiting) -> _Suspended | None:
         metrics.count_suspension("over_budget")
         return None
     metrics.count_suspension("dumped")
-    return _Suspended(snapshot=snapshot, call_ids=waiting.call_ids)
+    return ProgramSuspended(snapshot=snapshot, call_ids=waiting.call_ids)
 
 
 def _functions_module(run: _Run, stubs: str) -> ExternalModule:
@@ -1100,7 +1014,7 @@ def execute_program(
     resource_limits = _resource_limits(limits)
     functions = _functions_module(run, stubs)
     # A dumped program that waits for its calls without a worker.
-    suspended: _Suspended | None = None
+    suspended: ProgramSuspended | None = None
     try:
         with cancellation.on_cancel(run.wake.set):
             while True:
@@ -1121,7 +1035,7 @@ def execute_program(
                         if loading is None
                         else partial(_load, session, run, loading),
                     )
-                    while isinstance(step, _Waiting):
+                    while isinstance(step, ProgramWaiting):
                         if not run.wait_for_any(step.call_ids, yield_worker=True):
                             suspended = _suspend(run, step)
                             if suspended is not None:
@@ -1129,12 +1043,12 @@ def execute_program(
                             _worker_demand.kept(run.wake.set)
                             run.wait_for_any(step.call_ids)
                         step = _segment(session, run, partial(_resumed, step))
-                if not isinstance(step, _Waiting):
+                if not isinstance(step, ProgramWaiting):
                     ended = step
                     break
                 if suspended is not None:
                     run.wait_for_any(suspended.call_ids)
-        if isinstance(ended, _Stopped):
+        if isinstance(ended, ProgramStopped):
             return finish(ended.status, error=ended.error, raised=ended.raised)
     except _Aborted as aborted:
         return finish(aborted.status, error=str(aborted))

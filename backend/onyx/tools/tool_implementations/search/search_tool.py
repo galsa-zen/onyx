@@ -36,7 +36,6 @@ refer to by using matching keywords to other parts of the prompt and reminders.
 
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import replace
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -181,8 +180,8 @@ logger = setup_logger()
 SEARCH_DECISION_RERANK_EXPANSION_FLAG = "onyx-search-decision-rerank-expansion"
 
 QUERIES_FIELD = "queries"
-_CODE_MODE_RESULT = replace(
-    SEARCH_RESULTS_CODE_MODE_RESULT, usage=CODE_MODE_SEARCH_USAGE
+_CODE_MODE_RESULT = SEARCH_RESULTS_CODE_MODE_RESULT.model_copy(
+    update={"usage": CODE_MODE_SEARCH_USAGE}
 )
 
 

@@ -38,8 +38,8 @@ from onyx.tools.tool_implementations.code_mode.models import (
     CodeModeCallStarted,
     CodeModeExecutionResult,
     CodeModeStdout,
+    SandboxLimits,
 )
-from onyx.tools.tool_implementations.code_mode.sandbox import SandboxLimits
 from onyx.tools.tool_implementations.search.models import SearchPlanningResult
 from onyx.tracing.framework import set_trace_processors
 from onyx.tracing.framework.create import trace

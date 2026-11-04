@@ -175,7 +175,7 @@ class Tool(abc.ABC):
 
     @property
     def code_mode_function_name(self) -> CodeModeFunctionName:
-        return CodeModeFunctionName(self.name)
+        return CodeModeFunctionName(name=self.name)
 
     @property
     def code_mode_result(self) -> CodeModeResultSpec:
