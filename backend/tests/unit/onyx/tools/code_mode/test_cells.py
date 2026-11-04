@@ -15,7 +15,7 @@ from onyx.agents.tools import (
     ToolProgress,
 )
 from onyx.context.search.models import SearchDocsResponse
-from onyx.llm.cancellation import CancellationSignal
+from onyx.llm.cancellation import AgentCancelled, CancellationSignal
 from onyx.llm.models import Message, ToolResult, ToolResultMessage
 from onyx.tools.models import ToolContext
 from onyx.tools.tool_implementations.code_mode import cells as cells_module
@@ -40,6 +40,7 @@ from onyx.tools.tool_implementations.code_mode.sandbox import (
     SandboxLimits,
     SandboxResult,
 )
+from onyx.utils.threadpool_concurrency import start_thread_future
 from tests.unit.onyx.tools.code_mode.fakes import (
     LIMITS,
     FakeTool,
@@ -273,6 +274,27 @@ def test_terminate_stops_the_cell() -> None:
         "Store writes discarded because the program was stopped before it ended: a."
     )
     assert response.finish() == {}
+
+
+def test_printed_text_streams_while_the_program_runs() -> None:
+    response = Response()
+    invocation = response.invocation(
+        {"code": "print('a')\nwhile True:\n    pass\n", "yield_time_ms": 30_000}
+    )
+    running = start_thread_future(
+        lambda: response.execute.run(invocation, ToolContext()), name="test-execute"
+    )
+    # No call event or observation end sends the text; the waiting call does.
+    until(
+        lambda: any(
+            isinstance(event, CodeModeStdout) and event.text == "a\n"
+            for event in response.events.get(invocation.call_id, [])
+        )
+    )
+    response.cancellation.cancel()
+    with pytest.raises(AgentCancelled):
+        running.result(10)
+    response.finish()
 
 
 def test_one_active_wait_per_cell() -> None:

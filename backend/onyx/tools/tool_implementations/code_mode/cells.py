@@ -84,10 +84,7 @@ from onyx.tools.tool_implementations.utils import truncate_output
 from onyx.tracing.framework.create import function_span
 from onyx.utils.logger import setup_logger
 from onyx.utils.pydantic_util import as_base
-from onyx.utils.threadpool_concurrency import (
-    start_thread_future,
-    start_thread_with_context,
-)
+from onyx.utils.threadpool_concurrency import start_thread_future
 
 logger = setup_logger()
 
@@ -546,8 +543,9 @@ class CodeCell:
         # Printed text not yet sent to the attached observer.
         self._pending_stdout: list[str] = []
         self._pending_stdout_chars = 0
-        # A flush of the buffered printed text is due; one at a time per cell.
-        self._flush_armed = False
+        # When the oldest pending text was printed; the observer's thread sends it
+        # STDOUT_FLUSH_SECONDS later.
+        self._pending_since = 0.0
         # The attached observer. After Stop it stays attached; `close` saves it.
         self._observer: _Observer | None = None
         self._observations = 0
@@ -730,12 +728,20 @@ class CodeCell:
                 self._changed.notify_all()
 
         with cancellation.on_cancel(wake), self._lock:
-            self._changed.wait_for(
-                lambda: (
-                    self._end is not None or self._yielded or cancellation.cancelled
-                ),
-                max(0.0, deadline - time.monotonic()),
-            )
+            while not (
+                self._end is not None or self._yielded or cancellation.cancelled
+            ):
+                now = time.monotonic()
+                if now >= deadline:
+                    break
+                if self._pending_stdout:
+                    flush_at = self._pending_since + STDOUT_FLUSH_SECONDS
+                    if now >= flush_at:
+                        self._flush_stdout()
+                        continue
+                    self._changed.wait(min(deadline, flush_at) - now)
+                else:
+                    self._changed.wait(deadline - now)
             if cancellation.cancelled:
                 # The run's cancellation also stops the cell. The observer stays
                 # attached, so `close` saves this observation at the run's end.
@@ -884,13 +890,10 @@ class CodeCell:
         self._pending_stdout_chars += len(text)
         if self._pending_stdout_chars >= STDOUT_FLUSH_CHARS:
             self._flush_stdout()
-        elif not self._flush_armed:
-            self._flush_armed = True
-            start_thread_with_context(
-                self._flush_stdout_later,
-                name=f"code-mode-cell-{self.id}-stdout",
-                daemon=True,
-            )
+        elif len(self._pending_stdout) == 1:
+            self._pending_since = time.monotonic()
+            # The waiting observer starts its flush interval.
+            self._changed.notify_all()
 
     def _flush_stdout(self) -> None:
         """Send the buffered printed text to the attached observer."""
@@ -900,14 +903,6 @@ class CodeCell:
         self._pending_stdout.clear()
         self._pending_stdout_chars = 0
         self._publish(CodeModeStdout(text=text))
-
-    def _flush_stdout_later(self) -> None:
-        # Earlier flushes do not disarm it, so printing starts at most one flush
-        # thread per STDOUT_FLUSH_SECONDS.
-        time.sleep(STDOUT_FLUSH_SECONDS)
-        with self._lock:
-            self._flush_armed = False
-            self._flush_stdout()
 
     def _send(self, details: CellEvent) -> None:
         with self._lock:
