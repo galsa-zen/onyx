@@ -1,8 +1,9 @@
 """Prometheus metrics for code mode capacity in one API server process.
 
 The sandbox worker pool, the dumped-program budget and the tool call thread
-budget are per process, so each gauge has a matching `_limit` gauge to compare
-against. Labels are closed enums; no tenant or user labels.
+budget are per process. The gauges of these three budgets each have a matching
+`_limit` gauge to compare against. Labels are closed enums; no tenant or user
+labels.
 """
 
 from typing import Literal
