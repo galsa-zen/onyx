@@ -98,6 +98,9 @@ MAX_CONCURRENT_TOOL_CALLS = 16
 # thread within its program's share waits in its program's queue. A call that
 # ignores cancellation keeps its thread until it returns.
 MAX_TOOL_CALL_THREADS = 192
+# A call that returns this long after its program ended held its thread while
+# ignoring cancellation; it is logged.
+LATE_CALL_WARNING_SECONDS = 30.0
 
 YIELD_CONTROL_FUNCTION = "yield_control"
 YIELD_CONTROL_STUB = '''def yield_control() -> None:
@@ -300,6 +303,10 @@ class _ToolCallThreads:
         self._held: dict[Callable[[], None], int] = {}
         # Wake-ups of programs whose queued calls wait for a thread.
         self._waiting: set[Callable[[], None]] = set()
+        # Programs that ended while their calls still held threads: calls that
+        # ignore cancellation, such as hung tools.
+        self._ended: set[Callable[[], None]] = set()
+        self._held_after_end = 0
 
     def acquire(self, wake: Callable[[], None]) -> bool:
         """Take a thread for the program of `wake`; when none is free within its
@@ -324,15 +331,27 @@ class _ToolCallThreads:
             held = self._held.pop(wake) - 1
             if held:
                 self._held[wake] = held
+            if wake in self._ended:
+                self._held_after_end -= 1
+                metrics.TOOL_CALL_THREADS_HELD_AFTER_END.set(self._held_after_end)
+                if not held:
+                    self._ended.discard(wake)
             # Waiting programs keep their place in the share until they take a
-            # thread or end (`forget`).
+            # thread or end (`end_program`).
             waiting = tuple(self._waiting)
         for program_wake in waiting:
             program_wake()
 
-    def forget(self, wake: Callable[[], None]) -> None:
+    def end_program(self, wake: Callable[[], None]) -> int:
+        """The program of `wake` ended; returns the threads its calls still hold."""
         with self._lock:
             self._waiting.discard(wake)
+            held = self._held.get(wake, 0)
+            if held:
+                self._ended.add(wake)
+                self._held_after_end += held
+                metrics.TOOL_CALL_THREADS_HELD_AFTER_END.set(self._held_after_end)
+            return held
 
 
 _tool_call_threads = _ToolCallThreads(MAX_TOOL_CALL_THREADS)
@@ -514,6 +533,8 @@ class _Run:
         # queueing for a worker does not count.
         self.started: float | None = None
         self.deadline = math.inf
+        # When the program ended; its calls that still run hold their threads.
+        self.ended: float | None = None
         # Unfinished tool calls by sandbox call id, in call order.
         self.calls: dict[int, PendingCall] = {}
         # Unfinished sleeps by sandbox call id: the monotonic time each one ends.
@@ -670,6 +691,23 @@ class _Run:
             return self.handler(external)
         finally:
             _tool_call_threads.release(self.wake.set)
+            ended = self.ended
+            if (
+                ended is not None
+                and (late := time.monotonic() - ended) >= LATE_CALL_WARNING_SECONDS
+            ):
+                logger.warning(
+                    "Code mode tool call %s returned %.0f s after its program ended",
+                    external.function_name,
+                    late,
+                )
+
+    def running_call_names(self) -> list[str]:
+        return [
+            pending.external.function_name
+            for pending in self.calls.values()
+            if pending.future is not None and not pending.future.done()
+        ]
 
     def _finished(self, call_id: int) -> bool:
         """Whether a call or sleep has ended; an unknown id counts as ended."""
@@ -1067,7 +1105,12 @@ def execute_program(
         metrics.SANDBOX_BUSY_REJECTIONS.inc()
         return finish("failed", error=BUSY_MESSAGE)
     finally:
-        _tool_call_threads.forget(run.wake.set)
+        run.ended = time.monotonic()
+        if _tool_call_threads.end_program(run.wake.set):
+            logger.info(
+                "Code mode program ended with tool calls still running: %s",
+                ", ".join(run.running_call_names()),
+            )
         if suspended is not None:
             _suspended_bytes.release(len(suspended.snapshot))
     return finish(

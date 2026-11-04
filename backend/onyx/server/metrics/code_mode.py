@@ -53,6 +53,11 @@ TOOL_CALL_THREADS_IN_USE = Gauge(
     "onyx_code_mode_tool_call_threads_in_use",
     "Threads running tool calls of programs.",
 )
+TOOL_CALL_THREADS_HELD_AFTER_END = Gauge(
+    "onyx_code_mode_tool_call_threads_held_after_end",
+    "Tool call threads still held by calls whose program ended: calls that "
+    "ignore cancellation, such as hung tools.",
+)
 TOOL_CALL_THREADS_LIMIT = Gauge(
     "onyx_code_mode_tool_call_threads_limit",
     "Budget of threads for tool calls of programs.",

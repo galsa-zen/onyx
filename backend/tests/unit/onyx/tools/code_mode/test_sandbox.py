@@ -1037,10 +1037,19 @@ def test_a_call_that_outlives_its_program_keeps_its_thread_until_it_returns(
     result = run("pending = slow(seconds=1)\n'started'\n", handler)
     assert result.status == "completed", result
     assert [call.function_name for call in result.unawaited_calls] == ["slow"]
-    # The unawaited call still holds the only thread.
+    # The unawaited call still holds the only thread, and the gauge shows it.
     assert not threads.acquire(lambda: None)
+    assert _held_after_end() == 1
     release.set()
     until(lambda: threads.acquire(lambda: None))
+    assert _held_after_end() == 0
+
+
+def _held_after_end() -> float:
+    return (
+        REGISTRY.get_sample_value("onyx_code_mode_tool_call_threads_held_after_end")
+        or 0.0
+    )
 
 
 def test_queued_calls_that_never_started_are_not_reported_as_started(

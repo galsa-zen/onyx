@@ -308,9 +308,12 @@ health calls are not retried.
     want threads, each takes at most an equal share
     (`_ToolCallThreads`). A queued call waits for a free thread instead of
     failing, and a call that ignores cancellation keeps its thread until it
-    returns. An MCP call stops when its cell stops
+    returns. The `onyx_code_mode_tool_call_threads_held_after_end` gauge counts
+    these threads, and a call that returns `LATE_CALL_WARNING_SECONDS` after
+    its program ended logs a warning. An MCP call stops when its cell stops
     (`server/features/mcp/client.py:call_mcp_tool` with the invocation's
-    cancellation). A response has at most `MAX_OPEN_CELLS` (4)
+    cancellation), and each MCP request times out after
+    `MCP_TOOL_CALL_TIMEOUT_SECONDS`. A response has at most `MAX_OPEN_CELLS` (4)
     open cells (`tools/tool_implementations/code_mode/cells.py`), so idle cells
     cost only their driver threads. A server process runs at most
     `MAX_RUNNING_CELLS` (64) cells whose program has not ended
