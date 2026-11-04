@@ -44,19 +44,27 @@ class FinishHook:
     """Records each call and amends the first recorded tool result."""
 
     def __init__(
-        self, *, fail: bool = False, call_id: str = CALL_ID, delay: float = 0.0
+        self,
+        *,
+        fail: bool = False,
+        call_id: str = CALL_ID,
+        wait_until: datetime | None = None,
     ) -> None:
         self.calls: list[list[ToolResultMessage]] = []
         self.fail = fail
         self.call_id = call_id
-        self.delay = delay
+        # The call returns only after this time passes.
+        self.wait_until = wait_until
         # When each call started and returned.
         self.spans: list[tuple[datetime, datetime]] = []
 
     def __call__(self, results: list[ToolResultMessage]) -> list[ToolResultAmendment]:
         self.calls.append(results)
         started = datetime.now(timezone.utc)
-        time.sleep(self.delay)
+        while self.wait_until is not None and (
+            datetime.now(timezone.utc) <= self.wait_until
+        ):
+            time.sleep(0.01)
         self.spans.append((started, datetime.now(timezone.utc)))
         if self.fail:
             raise RuntimeError("finish hook failed")
@@ -178,7 +186,7 @@ def test_finish_hook_amends_result_when_model_fails() -> None:
 @pytest.mark.parametrize("stop", ["user", "user_then_deadline_passes", "deadline"])
 def test_finish_hook_amends_result_when_run_is_cancelled(stop: str) -> None:
     # A Stop wins over a deadline that passes while the run finishes.
-    hook = FinishHook(delay=3.0 if stop == "user_then_deadline_passes" else 0.0)
+    hook = FinishHook()
     second_step = threading.Event()
     cancellation = CancellationSignal()
 
@@ -215,6 +223,7 @@ def test_finish_hook_amends_result_when_run_is_cancelled(stop: str) -> None:
             # The Stop comes at the second step, within milliseconds; the deadline
             # passes while the finish hook runs.
             deadline_at = datetime.now(timezone.utc) + timedelta(seconds=1.5)
+            hook.wait_until = deadline_at
         run, events, saved = _run(
             agent, cancellation=cancellation, deadline_at=deadline_at
         )
