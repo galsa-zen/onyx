@@ -312,7 +312,7 @@ health calls are not retried.
     a worker up to its lifetime. A program that waits (an `await` on
     unfinished tool calls or sleeps, or a synchronous `time.sleep`) keeps its
     worker while no other program waits for one. Each program that waits for
-    a worker claims one such holder (`sandbox.py:_WorkerDemand`), and claims
+    a worker claims one such holder (`tools/tool_implementations/code_mode/sandbox.py:_WorkerDemand`), and claims
     again each time its checkout times out. The claimed holder's
     `tools/tool_implementations/code_mode/sandbox.py:execute_program`
     dumps the waiting program, returns the worker, and resumes on any worker
