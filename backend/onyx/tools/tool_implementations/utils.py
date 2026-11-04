@@ -10,6 +10,11 @@ from onyx.utils.logger import setup_logger
 logger = setup_logger()
 
 
+def truncation_marker(omitted: int) -> str:
+    """The marker that `truncate_output(keep_tail=True)` puts between head and tail."""
+    return f"\n... [output truncated, {omitted} characters omitted] ...\n"
+
+
 def truncate_output(
     output: str,
     max_length: int,
@@ -25,18 +30,19 @@ def truncate_output(
     if len(output) <= max_length:
         return output
     omitted = len(output) - max_length
-    marker = f"\n... [output truncated, {omitted} characters omitted]"
     if keep_tail:
         head_length = max_length // 2
         tail_length = max_length - head_length
         truncated = (
             output[:head_length]
-            + marker
-            + " ...\n"
+            + truncation_marker(omitted)
             + (output[-tail_length:] if tail_length else "")
         )
     else:
-        truncated = output[:max_length] + marker
+        truncated = (
+            output[:max_length]
+            + f"\n... [output truncated, {omitted} characters omitted]"
+        )
     logger.debug("Truncated %s: %s", label, truncated)
     return truncated
 

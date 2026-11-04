@@ -15,9 +15,9 @@ from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from functools import partial
-from typing import Literal
+from typing import Literal, cast
 
-from pydantic import BaseModel, JsonValue, TypeAdapter
+from pydantic import BaseModel, JsonValue
 
 from onyx.agents.models import ToolResultAmendment
 from onyx.agents.tools import ToolInvocation, ToolProgress
@@ -80,7 +80,7 @@ from onyx.tools.tool_implementations.code_mode.stubs import (
     tool_arguments,
 )
 from onyx.tools.tool_implementations.search.models import SearchPlanningResult
-from onyx.tools.tool_implementations.utils import truncate_output
+from onyx.tools.tool_implementations.utils import truncate_output, truncation_marker
 from onyx.tracing.framework.create import function_span
 from onyx.utils.logger import setup_logger
 from onyx.utils.pydantic_util import as_base
@@ -119,11 +119,6 @@ STDOUT_FLUSH_CHARS = 4_096
 STDOUT_FLUSH_SECONDS = 0.05
 
 StopReason = Literal["cancelled", "terminated"]
-_CALL_DETAILS: TypeAdapter[CodeModeCallDetails] = TypeAdapter(CodeModeCallDetails)
-
-
-def _omitted_marker(omitted: int) -> str:
-    return f"\n... [output truncated, {omitted} characters omitted] ...\n"
 
 
 class StdoutCollector:
@@ -199,16 +194,15 @@ class StdoutCollector:
         tail = "".join(self._tail)
         if not self._dropped:
             # Nothing dropped: head and tail are one contiguous text.
-            head, tail = head + tail, ""
-            if len(head) <= max_chars:
-                return head
-            head, tail = head[: len(head) // 2], head[len(head) // 2 :]
+            return truncate_output(
+                head + tail, max_chars, label="code mode output", keep_tail=True
+            )
         kept_head = min(max_chars // 2, len(head))
         kept_tail = min(max_chars - kept_head, len(tail))
         omitted = self._dropped + len(head) - kept_head + len(tail) - kept_tail
         return (
             head[:kept_head]
-            + _omitted_marker(omitted)
+            + truncation_marker(omitted)
             + (tail[len(tail) - kept_tail :] if kept_tail else "")
         )
 
@@ -247,15 +241,17 @@ def durable_details(details: BaseModel | None) -> CodeModeCallDetails | None:
     """
     for kind in CODE_MODE_CALL_DETAIL_TYPES:
         if isinstance(details, kind):
-            durable = _CALL_DETAILS.validate_python(as_base(details, kind))
+            durable = as_base(details, kind)
             if (
                 isinstance(durable, CustomToolCallSummary)
                 and durable.structured_result is not None
             ):
-                # Live only: the program receives it; saved results never hold it.
-                # A copy, since validation can return the live details.
-                return durable.model_copy(update={"structured_result": None})
-            return durable
+                # Saved results exclude it; cleared so that the cell's call records
+                # do not hold it for the rest of the run. A copy, since `as_base`
+                # can return the live details.
+                durable = durable.model_copy(update={"structured_result": None})
+            # `kind` is a member of the CodeModeCallDetails union.
+            return cast(CodeModeCallDetails, durable)
     return None
 
 
@@ -373,12 +369,12 @@ def _recorded_cell_ids(messages: Sequence[Message]) -> set[int]:
 
 
 def _closing_amendment(
-    call_id: str, result: ToolResult, closing: CellClosing
+    call_id: str,
+    result: ToolResult,
+    details: CodeModeExecutionResult,
+    closing: CellClosing,
 ) -> ToolResultAmendment:
     """The saved result of a cell's observation, with the cell's closing record."""
-    details = result.details
-    if not isinstance(details, CodeModeExecutionResult):
-        raise ValueError("A closing record belongs to an observation of a cell")
     return ToolResultAmendment(
         call_id=call_id,
         result=ToolResult(
@@ -402,6 +398,7 @@ def _interrupted_amendments(
         _closing_amendment(
             message.tool_call_id,
             message,
+            details,
             CellClosing(reason="interrupted", status="cancelled"),
         )
         for cell_id, (message, details) in last.items()
@@ -566,7 +563,7 @@ class CodeCell:
         self._closed = False
         # The last saved observation, with its call id, while it reports the cell
         # running.
-        self._last: tuple[str, ToolResult] | None = None
+        self._last: tuple[str, ToolResult, CodeModeExecutionResult] | None = None
         # Observations taken but not yet formatted; `close` waits for them.
         self._formatting = 0
 
@@ -585,10 +582,11 @@ class CodeCell:
     ) -> ToolResult:
         """Run the program; returns observation 0 to the call that started it."""
         with self._lock:
-            invocation = self._source
-            observer = self._attach(invocation, self._context, max_tokens)
+            if self._observations:
+                raise RuntimeError(f"Cell {self.id} already started")
+            observer = self._attach(self._source, self._context, max_tokens)
         start_thread_future(
-            partial(self._drive, snapshot, invocation.cancellation),
+            partial(self._drive, snapshot, observer.invocation.cancellation),
             name=f"code-mode-cell-{self.id}",
         )
         return self._observe(observer, yield_seconds)
@@ -661,18 +659,13 @@ class CodeCell:
                 if observer is not None
                 else self._closing(reason)
             )
-        if taken is None:
-            return None
         if isinstance(taken, _Cut):
             return ToolResultAmendment(
                 call_id=taken.call_id, result=self._formatted(taken)
             )
-        call_id, result, closing = taken
-        return _closing_amendment(call_id, result, closing)
+        return taken
 
-    def _closing(
-        self, reason: CellClosingReason
-    ) -> tuple[str, ToolResult, CellClosing] | None:
+    def _closing(self, reason: CellClosingReason) -> ToolResultAmendment | None:
         """Close the cell: the closing record for its last saved observation, when
         that reports it running. The caller holds the lock."""
         # An observation being formatted may still report the cell running.
@@ -680,10 +673,11 @@ class CodeCell:
         self._closed = True
         if self._last is None:
             return None
-        call_id, result = self._last
-        return (
+        call_id, result, details = self._last
+        return _closing_amendment(
             call_id,
             result,
+            details,
             CellClosing(
                 reason=reason,
                 status=self._final_status(),
@@ -849,7 +843,7 @@ class CodeCell:
         finally:
             with self._lock:
                 if formatted is not None and status == "running":
-                    self._last = (cut.call_id, formatted)
+                    self._last = (cut.call_id, formatted, cut.saved)
                 self._formatting -= 1
                 self._changed.notify_all()
 
@@ -922,11 +916,12 @@ class CodeCell:
             end = self._execute(store, run_cancellation)
             self._end_program(end, store)
             with self._lock:
-                metrics.observe_program_end(self._final_status(), end.duration_seconds)
-                span.span_data.output = self._ended_as
+                status = self._final_status()
+                metrics.observe_program_end(status, end.duration_seconds)
+                span.span_data.output = status
                 span.span_data.metadata = {
                     "code_mode.cell_id": self.id,
-                    "code_mode.status": self._ended_as,
+                    "code_mode.status": status,
                     "code_mode.duration_seconds": end.duration_seconds,
                     "code_mode.tool_call_count": len(self._calls),
                     "code_mode.tool_names": sorted(
