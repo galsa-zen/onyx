@@ -17,6 +17,7 @@ import uvicorn
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ImageContent, TextContent
+from pydantic import BaseModel, JsonValue
 from sqlalchemy.orm import Session
 
 from onyx.cache.factory import get_cache_backend
@@ -82,6 +83,13 @@ PRINTED = "Hello, alpha! | Hello, beta!"
 DENIED = "403 Forbidden: repo access denied"
 
 
+class Forecast(BaseModel):
+    """The structured result of the test server's `forecast` tool."""
+
+    city: str
+    high: int
+
+
 class ServerSignals:
     """What the test MCP server's tools report to one test."""
 
@@ -106,8 +114,8 @@ def signals() -> Generator[ServerSignals, None, None]:
 
 @pytest.fixture(scope="module")
 def mcp_server_url() -> Generator[str, None, None]:
-    """A FastMCP server with `hello`, `slow`, `chart` and `deny` tools, served in
-    this process."""
+    """A FastMCP server with `hello`, `slow`, `chart`, `forecast` and `deny` tools,
+    served in this process."""
     mcp = FastMCP("Code mode test server")
 
     @mcp.tool
@@ -133,6 +141,11 @@ def mcp_server_url() -> Generator[str, None, None]:
             TextContent(type="text", text=f"Chart for {name}"),
             ImageContent(type="image", mimeType="image/png", data="aGVsbG8="),
         ]
+
+    @mcp.tool
+    def forecast(name: str) -> Forecast:
+        """Return a structured forecast."""
+        return Forecast(city=name, high=21)
 
     @mcp.tool
     def deny(name: str) -> str:
@@ -172,6 +185,7 @@ def _persona_with_mcp_tool(
     user: User,
     server_url: str,
     tool_names: Sequence[str] = ("hello",),
+    output_schema: dict[str, JsonValue] | None = None,
 ) -> Persona:
     mcp_server = create_mcp_server__no_commit(
         owner_email=user.email,
@@ -196,7 +210,8 @@ def _persona_with_mcp_tool(
                 "required": ["name"],
             },
             # FastMCP wraps a str result as {"result": str}.
-            mcp_output_schema={
+            mcp_output_schema=output_schema
+            or {
                 "type": "object",
                 "properties": {"result": {"type": "string"}},
                 "required": ["result"],
@@ -1081,3 +1096,32 @@ def test_a_program_finds_a_deferred_mcp_function_with_tool_search(
     # The stub types the result from the server's output schema.
     assert "-> AcmeHelloResult" in text
     assert text.rstrip().endswith("Hello, alpha!")
+
+
+def test_a_program_receives_the_structured_result_of_an_mcp_tool(
+    db_session: Session,
+    make_test_user: MakeTestUser,
+    mcp_server_url: str,
+) -> None:
+    user = make_test_user("code_mode_mcp_structured_user")
+    persona = _persona_with_mcp_tool(
+        db_session,
+        user,
+        mcp_server_url,
+        tool_names=("forecast",),
+        output_schema=Forecast.model_json_schema(),
+    )
+    chat_session = create_chat_session_from_request(
+        chat_session_request=ChatSessionCreationRequest(persona_id=persona.id),
+        user=user,
+        db_session=db_session,
+    )
+    program = (
+        "forecast = await acme__forecast(name='Oslo')\n"
+        "print(type(forecast).__name__, forecast['city'], forecast['high'] + 1)\n"
+    )
+    llm = ChatLLM([code_step("code", program), Delta(content="Forecasted.")])
+    assert final_answer(send(chat_session.id, user, llm, "Forecast Oslo.")) == (
+        "Forecasted."
+    )
+    assert "dict Oslo 22" in last_tool_text(llm, "code")

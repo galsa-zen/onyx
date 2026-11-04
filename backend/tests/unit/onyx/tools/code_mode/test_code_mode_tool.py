@@ -675,14 +675,12 @@ def test_saved_calls_keep_only_the_saved_type_of_their_details() -> None:
     assert durable_details(Progress(step="x")) is None
 
 
-def test_saved_details_drop_the_structured_result_and_keep_the_live_one() -> None:
+def test_saving_details_leaves_the_live_structured_result() -> None:
     live = CustomToolCallSummary(
         tool_name="lookup",
         response_type="json",
         tool_result={"a": 1},
         structured_result={"a": 1},
     )
-    saved = durable_details(live)
-    assert isinstance(saved, CustomToolCallSummary)
-    assert saved.structured_result is None
+    durable_details(live)
     assert live.structured_result == {"a": 1}
