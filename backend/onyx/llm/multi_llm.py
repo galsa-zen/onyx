@@ -1569,15 +1569,18 @@ class LitellmLLM(LLM):
             model_configuration_id=self._model_configuration_id,
         )
 
-    def _uses_isolated_client(self) -> bool:
-        """Providers whose sync calls need a fresh per-call HTTPHandler instead of
-        litellm's shared module_level_client (see threading notes in invoke())."""
+    def _is_true_openai_model(self) -> bool:
         return any(
             is_true_openai_model(self.config.model_provider, name)
             for name in resolve_model_identity_names(
                 self.config.model_name, self.config.deployment_name
             )
-        ) or self.config.model_provider in (
+        )
+
+    def _uses_isolated_client(self) -> bool:
+        """Providers whose sync calls need a fresh per-call HTTPHandler instead of
+        litellm's shared module_level_client (see threading notes in invoke())."""
+        return self._is_true_openai_model() or self.config.model_provider in (
             LlmProviderNames.ANTHROPIC,
             LlmProviderNames.BEDROCK,
             LlmProviderNames.BEDROCK_CONVERSE,
@@ -1915,7 +1918,9 @@ class LitellmLLM(LLM):
     ) -> AssistantMessage:
         context = context or GenerationContext()
         messages, cache_stats = self._prepare_request(request)
-        tools = serialize_tools(request.tools) or None
+        tools = (
+            serialize_tools(request.tools, strict=self._is_true_openai_model()) or None
+        )
         with (
             _provider_scope(context, self) as signal,
             llm_generation_span(
@@ -1966,7 +1971,9 @@ class LitellmLLM(LLM):
         operation = ProviderOperation()
         accumulator = MessageAccumulator(request.tools)
         messages, cache_stats = self._prepare_request(request)
-        tools = serialize_tools(request.tools) or None
+        tools = (
+            serialize_tools(request.tools, strict=self._is_true_openai_model()) or None
+        )
         with (
             _provider_scope(context, self) as signal,
             llm_generation_span(
