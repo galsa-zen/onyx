@@ -453,11 +453,11 @@ class StagedChatFiles(BaseModel):
         ]
 
 
-class ChatSearchResult(SearchDocsResponse, StagedChatFiles):
+class ChatSearchResult(StagedChatFiles, SearchDocsResponse):
     """Search documents with their files staged."""
 
 
-class ChatCodeModeResult(CodeModeExecutionResult, StagedChatFiles):
+class ChatCodeModeResult(StagedChatFiles, CodeModeExecutionResult):
     """A code mode result with the files of its nested searches staged."""
 
 
