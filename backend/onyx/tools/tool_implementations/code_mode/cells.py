@@ -13,11 +13,10 @@ import time
 from collections import deque
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
 from functools import partial
 from typing import Literal, cast
 
-from pydantic import BaseModel, JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from onyx.agents.models import ToolResultAmendment
 from onyx.agents.tools import ToolInvocation, ToolProgress
@@ -40,9 +39,11 @@ from onyx.tools.models import (
 from onyx.tools.tool_implementations.code_mode.models import (
     CODE_MODE_CALL_DETAIL_TYPES,
     STOPPED_BEFORE_END,
+    CellCallRecord,
     CellClosing,
     CellClosingReason,
     CellEvent,
+    CellObserver,
     ClosedStatus,
     CodeModeCall,
     CodeModeCallDetails,
@@ -54,6 +55,7 @@ from onyx.tools.tool_implementations.code_mode.models import (
     CodeModeStdout,
     DiscardedWrites,
     ExternalCall,
+    ObservationCut,
     SandboxLimits,
     SandboxResult,
     StoreCommit,
@@ -447,56 +449,17 @@ class _StoreCommits:
             return commit
 
 
-@dataclass(frozen=True)
-class Program:
-    """A program to run as a cell, with the tools it can call."""
+class Program(BaseModel):
+    """A program to run as a cell, with the tools it can call. It stays here, not
+    in models.py: ToolStubs and SequentialCalls import models.py."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     code: str
     stubs: ToolStubs
     limits: SandboxLimits
     # Calls to these tools, by tool name, run one at a time.
     sequential_calls: Mapping[str, SequentialCalls]
-
-
-@dataclass
-class _CallRecord:
-    """A nested call of a cell."""
-
-    # As started, then as it ended (bounded).
-    call: CodeModeCall
-    # The windows in which the call started and ended; None while it runs.
-    started_in: int
-    ended_in: int | None = None
-    # The call's thread has not returned; a call can ignore cancellation.
-    thread_alive: bool = True
-
-    def in_window(self, window: int) -> bool:
-        """Whether the window reports the call: it ended in it, or still runs."""
-        return self.ended_in is None or self.ended_in == window
-
-
-@dataclass(frozen=True)
-class _Observer:
-    invocation: ToolInvocation
-    number: int
-    # Tokens of output that the observation returns.
-    max_tokens: int
-
-
-@dataclass(frozen=True)
-class _Cut:
-    """An ended observation, taken under the cell lock and formatted after it, so
-    tokenizing large output does not hold up the cell."""
-
-    call_id: str
-    # The parts as collected; `saved` holds them cut for saving.
-    details: CodeModeExecutionResult
-    saved: CodeModeExecutionResult
-    max_tokens: int
-    # Set when the observation reports the program's end.
-    end: SandboxResult | None
-    discarded: DiscardedWrites | None
-    elided_chars: int
 
 
 class CodeCell:
@@ -529,7 +492,7 @@ class CodeCell:
         # its program ends.
         self._stopping = CancellationSignal()
         self._started_at = time.monotonic()
-        self._calls: dict[int, _CallRecord] = {}
+        self._calls: dict[int, CellCallRecord] = {}
         self._saved_chars = 0
         # The current window: its number, printed text, and events kept for the
         # next observer while none is attached.
@@ -544,7 +507,7 @@ class CodeCell:
         # STDOUT_FLUSH_SECONDS later.
         self._pending_since = 0.0
         # The attached observer. After Stop it stays attached; `close` saves it.
-        self._observer: _Observer | None = None
+        self._observer: CellObserver | None = None
         self._observations = 0
         # Context and messages of the latest observation, for nested calls.
         self._source = invocation
@@ -659,7 +622,7 @@ class CodeCell:
                 if observer is not None
                 else self._closing(reason)
             )
-        if isinstance(taken, _Cut):
+        if isinstance(taken, ObservationCut):
             return ToolResultAmendment(
                 call_id=taken.call_id, result=self._formatted(taken)
             )
@@ -693,10 +656,10 @@ class CodeCell:
 
     def _attach(
         self, invocation: ToolInvocation, context: ToolContext, max_tokens: int
-    ) -> _Observer:
+    ) -> CellObserver:
         """Make `invocation` the observer and send it the window so far; the
         caller holds the lock."""
-        observer = _Observer(
+        observer = CellObserver(
             invocation=invocation, number=self._observations, max_tokens=max_tokens
         )
         self._observations += 1
@@ -713,7 +676,7 @@ class CodeCell:
         self._events.clear()
         return observer
 
-    def _observe(self, observer: _Observer, yield_seconds: float) -> ToolResult:
+    def _observe(self, observer: CellObserver, yield_seconds: float) -> ToolResult:
         deadline = time.monotonic() + yield_seconds
         cancellation = observer.invocation.cancellation
 
@@ -765,7 +728,7 @@ class CodeCell:
             if record.in_window(self._window)
         ]
 
-    def _take(self, observer: _Observer, *, final: bool) -> _Cut:
+    def _take(self, observer: CellObserver, *, final: bool) -> ObservationCut:
         """End the observation and start a new window. `final` reports the cell's
         end even when its program has not ended. The caller holds the lock and
         passes the cut to `_formatted`."""
@@ -805,7 +768,7 @@ class CodeCell:
                 else _bounded(details.error, saved_chars),
             }
         )
-        cut = _Cut(
+        cut = ObservationCut(
             call_id=observer.invocation.call_id,
             details=details,
             saved=saved,
@@ -823,7 +786,7 @@ class CodeCell:
         self._formatting += 1
         return cut
 
-    def _formatted(self, cut: _Cut) -> ToolResult:
+    def _formatted(self, cut: ObservationCut) -> ToolResult:
         """The result of a taken observation; formats outside the lock."""
         status = cut.details.status
         formatted: ToolResult | None = None
@@ -1021,7 +984,7 @@ class CodeCell:
             state="running",
         )
         with self._lock:
-            self._calls[external.index] = _CallRecord(
+            self._calls[external.index] = CellCallRecord(
                 call=started, started_in=self._window
             )
             context = self._context

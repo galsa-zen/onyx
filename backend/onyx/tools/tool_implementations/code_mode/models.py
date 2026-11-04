@@ -9,6 +9,7 @@ from typing import Annotated, Literal, Self, get_args
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
 from pydantic_monty import FunctionSnapshot, FutureSnapshot
 
+from onyx.agents.tools import ToolInvocation
 from onyx.context.search.models import SearchDocsResponse
 from onyx.llm.models import Message, ToolResultMessage
 from onyx.tools.models import (
@@ -423,3 +424,47 @@ class SearchableFunction(BaseModel):
     stub: str
     # Text that the search matches: the name (weighted), namespace and description.
     text: str
+
+
+class CellCallRecord(BaseModel):
+    """A nested call of a cell."""
+
+    # As started, then as it ended (bounded).
+    call: CodeModeCall
+    # The windows in which the call started and ended; None while it runs.
+    started_in: int
+    ended_in: int | None = None
+    # The call's thread has not returned; a call can ignore cancellation.
+    thread_alive: bool = True
+
+    def in_window(self, window: int) -> bool:
+        """Whether the window reports the call: it ended in it, or still runs."""
+        return self.ended_in is None or self.ended_in == window
+
+
+class CellObserver(BaseModel):
+    """The tool call that observes a cell."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    invocation: ToolInvocation
+    number: int
+    # Tokens of output that the observation returns.
+    max_tokens: int
+
+
+class ObservationCut(BaseModel):
+    """An ended observation, taken under the cell lock and formatted after it, so
+    tokenizing large output does not hold up the cell."""
+
+    model_config = ConfigDict(frozen=True)
+
+    call_id: str
+    # The parts as collected; `saved` holds them cut for saving.
+    details: CodeModeExecutionResult
+    saved: CodeModeExecutionResult
+    max_tokens: int
+    # Set when the observation reports the program's end.
+    end: SandboxResult | None
+    discarded: DiscardedWrites | None
+    elided_chars: int
