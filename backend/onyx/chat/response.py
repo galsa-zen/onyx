@@ -140,7 +140,7 @@ def response_snapshot(record: ResponseRecord) -> RunState:
 def _cited_documents(
     citation_mapping: Mapping[int, str], documents: Mapping[str, SearchDoc]
 ) -> list[SearchDoc]:
-    """The known documents of the citation numbers, each once, in number order."""
+    """The known documents of the citation numbers, each once, in mapping order."""
     return list(
         {
             document.document_id: document
