@@ -431,7 +431,8 @@ class ChatTurnExecution:
             chat_agent = create_chat_agent(
                 self.setup, self.user, index, cancellation, self._auto_filters
             )
-            persistence.tool_ids = tool_row_ids(chat_agent.application_tools)
+            tool_ids = tool_row_ids(chat_agent.application_tools)
+            persistence.tool_ids = dict(tool_ids)
             # Restored and child agents build their own tools from these.
             configured_tools = chat_agent.configured_tools
             if isinstance(chat_agent, DeepResearchAgent):
@@ -526,10 +527,7 @@ class ChatTurnExecution:
                     deadline_at=self._deadline_at,
                     coordinator=coordinator,
                     event_dispatcher=self.delivery.events,
-                    on_event=ResponsePresenter(
-                        emitter,
-                        tool_ids=tool_row_ids(chat_agent.application_tools),
-                    ).consume,
+                    on_event=ResponsePresenter(emitter, tool_ids=tool_ids).consume,
                 )
 
             def response_saved(completion: Future[RunState]) -> None:
