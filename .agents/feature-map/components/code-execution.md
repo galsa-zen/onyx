@@ -135,8 +135,9 @@ execute_code / wait_code (code mode; a cell per program, a store per chat)
         _watched                        while a worker computes, SIGKILLs it on the cell's
                                         cancellation, or by timer at the lifetime; the crash
                                         maps to cancelled / timed_out
-        program end                     calls never awaited are not waited for: listed in
-                                        SandboxResult.unawaited_calls, cancelled by the cell
+        program end                     calls never awaited are not waited for: started ones
+                                        in SandboxResult.unawaited_calls, cancelled by the
+                                        cell; queued ones in unstarted_calls, never run
       CodeCell._run_call                inner_tool.run(ToolInvocation(CodeModeCall.id,
                                         trace_metadata: call id, cell id, index, function
                                         name), the observer's ToolContext, a CitationAllocator
