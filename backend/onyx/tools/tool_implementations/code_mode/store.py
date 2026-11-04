@@ -155,6 +155,46 @@ def changed_writes(
     }
 
 
+def commit_limit_error(
+    current: StoreSnapshot, writes: Mapping[str, JsonValue]
+) -> str | None:
+    """Why `writes` cannot commit onto `current`, or None if they can.
+
+    store() checks the limits against the store a program started with; this
+    checks them again against commits that other programs made meanwhile.
+    """
+    before = sum(entry_bytes(key, value) for key, value in current.values.items())
+    after = (
+        before
+        - sum(
+            entry_bytes(key, current.values[key])
+            for key in writes
+            if key in current.values
+        )
+        + sum(
+            entry_bytes(key, value)
+            for key, value in writes.items()
+            if value is not None
+        )
+    )
+    if after > MAX_STORE_BYTES and after > before:
+        return (
+            f"the store would hold {after} bytes with the writes of other "
+            f"programs; the limit is {MAX_STORE_BYTES} bytes"
+        )
+    committed = current.committed_bytes + sum(
+        entry_bytes(key, value) for key, value in writes.items()
+    )
+    stores_values = any(value is not None for value in writes.values())
+    if stores_values and committed > MAX_COMMITTED_BYTES:
+        return (
+            f"this chat would save {committed} bytes of store writes with the "
+            f"writes of other programs; the limit is {MAX_COMMITTED_BYTES} bytes "
+            "per chat"
+        )
+    return None
+
+
 def store_summary(writes: Mapping[str, JsonValue]) -> str | None:
     """One line on a commit's writes, so the model knows the keys."""
     stored = [key for key, value in writes.items() if value is not None]
@@ -216,14 +256,14 @@ class ProgramStore:
     def store(self, key: object, value: object) -> None:
         valid_key = _valid_key(key)
         stored = json_value(value, f'Cannot store "{valid_key}": the value')
-        value_bytes = 0 if stored is None else len(json_text(stored).encode("utf-8"))
+        write_bytes = entry_bytes(valid_key, stored)
+        value_bytes = write_bytes - len(valid_key.encode("utf-8"))
         if value_bytes > MAX_STORED_VALUE_BYTES:
             raise ValueError(
                 f'Cannot store "{valid_key}": the value is {value_bytes} bytes as '
                 f"JSON; the limit is {MAX_STORED_VALUE_BYTES} bytes per value."
             )
-        entry_bytes = len(valid_key.encode("utf-8")) + value_bytes
-        size = 0 if stored is None else entry_bytes
+        size = 0 if stored is None else write_bytes
         total = self._total - self._sizes.get(valid_key, 0) + size
         if total > MAX_STORE_BYTES and total > self._total:
             raise ValueError(
@@ -232,7 +272,7 @@ class ProgramStore:
                 "with store(key, None)."
             )
         write_size = (
-            entry_bytes if _differs(self._snapshot.values.get(valid_key), stored) else 0
+            write_bytes if _differs(self._snapshot.values.get(valid_key), stored) else 0
         )
         committed = (
             self._snapshot.committed_bytes

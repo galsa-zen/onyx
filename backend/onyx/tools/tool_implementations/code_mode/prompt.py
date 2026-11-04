@@ -1,6 +1,7 @@
 """Text that the model reads for code mode: tool descriptions and each result."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from onyx.agents.compaction import count_tokens, head_and_tail_tokens
 from onyx.llm.models import Message
@@ -176,18 +177,34 @@ def token_budget(text: str, max_tokens: int, *, elided_chars: int = 0) -> str:
     )
 
 
+STOPPED_BEFORE_END = "the program was stopped before it ended"
+
+
+@dataclass(frozen=True)
+class DiscardedWrites:
+    """Keys of store() writes that did not commit, and why."""
+
+    keys: tuple[str, ...]
+    reason: str
+
+    @property
+    def note(self) -> str | None:
+        if not self.keys:
+            return None
+        return f"Store writes discarded because {self.reason}: {', '.join(self.keys)}."
+
+
 def format_content(
     details: CodeModeExecutionResult,
     *,
     max_tokens: int,
     end: SandboxResult | None,
-    discarded_writes: Sequence[str],
+    discarded: DiscardedWrites | None,
     elided_chars: int,
 ) -> str:
     """The text the model reads for one observation.
 
-    `end` and `discarded_writes` (keys of store() writes that did not commit)
-    are set when this observation reports the program's end. The output sections
+    `end` and `discarded` (store() writes that did not commit) are set when this observation reports the program's end. The output sections
     share `max_tokens` with the notes after them and are cut once. `elided_chars`
     were cut from the middle of the printed text before this.
     """
@@ -213,7 +230,7 @@ def format_content(
             else _unawaited_note(
                 [f"{call.function_name}[{call.index}]" for call in end.unawaited_calls]
             ),
-            _discarded_note(discarded_writes),
+            None if discarded is None else discarded.note,
             None if details.commit is None else store_summary(details.commit.writes),
             continues_note(details.cell_id) if running else None,
         )
@@ -228,15 +245,6 @@ def format_content(
         elided_chars=elided_chars,
     )
     return f"{text}\n\n{note_text}" if note_text else text
-
-
-def _discarded_note(keys: Sequence[str]) -> str | None:
-    if not keys:
-        return None
-    return (
-        f"Store writes discarded because the program was stopped before it ended: "
-        f"{', '.join(keys)}."
-    )
 
 
 def closing_line(cell_id: int, closing: CellClosing) -> str:

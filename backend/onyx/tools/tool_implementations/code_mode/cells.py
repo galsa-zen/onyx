@@ -54,6 +54,8 @@ from onyx.tools.tool_implementations.code_mode.models import (
     code_mode_results,
 )
 from onyx.tools.tool_implementations.code_mode.prompt import (
+    STOPPED_BEFORE_END,
+    DiscardedWrites,
     closing_line,
     format_content,
 )
@@ -67,6 +69,7 @@ from onyx.tools.tool_implementations.code_mode.store import (
     ProgramStore,
     StoreSnapshot,
     changed_writes,
+    commit_limit_error,
     store_snapshot,
 )
 from onyx.tools.tool_implementations.code_mode.stubs import (
@@ -407,6 +410,10 @@ def _interrupted_amendments(
     ]
 
 
+class StoreLimitError(Exception):
+    """A commit that would exceed a store limit."""
+
+
 class _StoreCommits:
     """Store commits of one response.
 
@@ -426,6 +433,7 @@ class _StoreCommits:
     def commit(
         self, writes: Mapping[str, JsonValue], recorded_results: Sequence[Message]
     ) -> StoreCommit | None:
+        """Raises StoreLimitError if the commit would exceed a store limit."""
         with self._lock:
             # Against the store at commit time: another cell may have changed it
             # since this one started.
@@ -433,6 +441,9 @@ class _StoreCommits:
             writes = changed_writes(current.values, writes)
             if not writes:
                 return None
+            error = commit_limit_error(current, writes)
+            if error is not None:
+                raise StoreLimitError(error)
             commit = StoreCommit(ordinal=current.last_ordinal + 1, writes=writes)
             self._commits.append(commit)
             return commit
@@ -486,7 +497,7 @@ class _Cut:
     max_tokens: int
     # Set when the observation reports the program's end.
     end: SandboxResult | None
-    discarded_writes: tuple[str, ...]
+    discarded: DiscardedWrites | None
     elided_chars: int
 
 
@@ -546,7 +557,7 @@ class CodeCell:
         # writes that did not commit; set together.
         self._end: SandboxResult | None = None
         self._ended_as: ClosedStatus | None = None
-        self._discarded_writes: tuple[str, ...] = ()
+        self._discarded: DiscardedWrites | None = None
         self._commit: StoreCommit | None = None
         # The final result was returned, or the response ended; events are dropped.
         self._closed = False
@@ -793,7 +804,7 @@ class CodeCell:
             saved=saved,
             max_tokens=budget,
             end=end,
-            discarded_writes=self._discarded_writes,
+            discarded=self._discarded,
             elided_chars=self._stdout.dropped,
         )
         self._window += 1
@@ -815,7 +826,7 @@ class CodeCell:
                     cut.details,
                     max_tokens=cut.max_tokens,
                     end=cut.end,
-                    discarded_writes=cut.discarded_writes,
+                    discarded=cut.discarded,
                     elided_chars=cut.elided_chars,
                 ),
                 details=cut.saved,
@@ -954,15 +965,19 @@ class CodeCell:
             source = self._source
         # Before the end is visible, so the observation that reports it has the
         # commit.
-        commit = (
-            self._store.commit(store.writes, source.recorded_results)
-            if end.commits_store
-            else None
-        )
+        commit: StoreCommit | None = None
+        discard_reason: str | None = None if end.commits_store else STOPPED_BEFORE_END
+        if end.commits_store:
+            try:
+                commit = self._store.commit(store.writes, source.recorded_results)
+            except StoreLimitError as error:
+                discard_reason = str(error)
         with self._lock:
             self._commit = commit
-            self._discarded_writes = (
-                () if end.commits_store else tuple(store.changed_writes)
+            self._discarded = (
+                None
+                if discard_reason is None
+                else DiscardedWrites(tuple(store.changed_writes), discard_reason)
             )
             for record in self._calls.values():
                 if record.ended_in is None:

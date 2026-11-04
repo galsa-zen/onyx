@@ -19,6 +19,7 @@ from onyx.llm.cancellation import CancellationSignal
 from onyx.llm.models import Message, ToolResult, ToolResultMessage
 from onyx.tools.models import ToolContext
 from onyx.tools.tool_implementations.code_mode import cells as cells_module
+from onyx.tools.tool_implementations.code_mode import store as store_module
 from onyx.tools.tool_implementations.code_mode.cells import (
     MAX_OPEN_CELLS,
     CodeCell,
@@ -391,6 +392,33 @@ def test_a_commit_keeps_writes_that_change_the_store_at_commit_time() -> None:
     a = _details(response.wait(2)).commit
     assert a is not None and a.writes == {"x": 1, "y": None}
     assert _details(response.run("[load('x'), load('y')]\n")).result == "[1, None]"
+
+
+@pytest.mark.parametrize(
+    ("limit", "reason"),
+    [
+        ("MAX_STORE_BYTES", "the store would hold"),
+        ("MAX_COMMITTED_BYTES", "this chat would save"),
+    ],
+)
+def test_concurrent_commits_together_stay_within_the_store_limits(
+    monkeypatch: pytest.MonkeyPatch, limit: str, reason: str
+) -> None:
+    monkeypatch.setattr(store_module, limit, 100)
+    response = Response()
+    # A and B start on the same empty store; each fits, both do not.
+    response.run("yield_control()\nawait gate(value='g')\nstore('a', 'x' * 60)\n")
+    b = _details(response.run("store('b', 'y' * 60)\n")).commit
+    assert b is not None
+    response.gate.set()
+    waited = response.wait(1)
+    assert _details(waited).status == "completed"
+    assert _details(waited).commit is None
+    assert f"Store writes discarded because {reason}" in waited.content
+    assert waited.content.rstrip().endswith(": a.")
+    assert _details(response.run("[load('a'), load('b')]\n")).result == (
+        f"[None, '{'y' * 60}']"
+    )
 
 
 def test_closing_record_lists_what_ran_after_the_last_observation() -> None:
