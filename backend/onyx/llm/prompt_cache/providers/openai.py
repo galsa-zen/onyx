@@ -1,7 +1,9 @@
 """OpenAI provider adapter for prompt caching.
 
-Requests to GPT-5.6+ models on the OpenAI API also carry explicit
-prompt_cache_breakpoints on every tool result (`explicit_cache_breakpoints`).
+OpenAI caches prompt prefixes implicitly. Requests on the OpenAI API to models
+that LiteLLM's `supports_openai_prompt_cache_breakpoint` accepts also carry
+explicit prompt_cache_breakpoints on every tool result
+(`explicit_cache_breakpoints`, applied in `multi_llm.py`).
 """
 
 from collections.abc import Iterable, Sequence
@@ -83,7 +85,10 @@ def explicit_cache_breakpoints(
 
 
 class OpenAIPromptCacheProvider(PromptCacheProvider):
-    """OpenAI adapter for prompt caching (implicit caching)."""
+    """OpenAI adapter for implicit prompt caching.
+
+    Explicit tool-result breakpoints come from `explicit_cache_breakpoints`.
+    """
 
     def supports_caching(self) -> bool:
         """OpenAI supports automatic prompt caching."""
