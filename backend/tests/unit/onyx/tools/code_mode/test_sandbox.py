@@ -19,6 +19,7 @@ from onyx.tools.tool_implementations.code_mode.models import (
     ProgramWaiting,
     SandboxLimits,
     SandboxResult,
+    StoreSnapshot,
     TypeDiagnostic,
 )
 from onyx.tools.tool_implementations.code_mode.sandbox import (
@@ -33,7 +34,6 @@ from onyx.tools.tool_implementations.code_mode.sandbox import (
 from onyx.tools.tool_implementations.code_mode.store import (
     STORE_STUBS,
     ProgramStore,
-    StoreSnapshot,
 )
 from tests.unit.onyx.tools.code_mode.fakes import until
 

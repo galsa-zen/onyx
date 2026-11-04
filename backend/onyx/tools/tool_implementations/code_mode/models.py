@@ -1,7 +1,7 @@
 """Typed details for code mode: one model-written program that calls other tools."""
 
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future
 from functools import cached_property
 from typing import Annotated, Literal, Self, get_args
@@ -371,3 +371,55 @@ class ProgramStopped(BaseModel):
     error: str
     # The program raised an exception that it did not catch.
     raised: bool = False
+
+
+class StoreSnapshot(BaseModel):
+    """The store after a set of commits."""
+
+    model_config = ConfigDict(frozen=True)
+
+    values: Mapping[str, JsonValue]
+    # Bytes of the commits saved in the conversation branch so far.
+    committed_bytes: int = 0
+    # The highest commit ordinal so far; 0 before the first commit.
+    last_ordinal: int = 0
+
+
+class StubParameter(BaseModel):
+    """One argument of a tool function stub."""
+
+    model_config = ConfigDict(frozen=True)
+
+    python_name: str
+    annotation: str
+    required: bool
+    description: str
+
+
+class StubResultType(BaseModel):
+    """The return annotation of a tool function stub and the declarations of
+    the types it names."""
+
+    model_config = ConfigDict(frozen=True)
+
+    annotation: str
+    declarations: tuple[str, ...]
+
+
+class SchemaRefBudget(BaseModel):
+    """`$ref` resolutions spent while one stub types a JSON Schema."""
+
+    total: int = 0
+
+
+class SearchableFunction(BaseModel):
+    """A deferred function as tool_search() matches and returns it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    description: str
+    # The function's stub with the declarations of its result types.
+    stub: str
+    # Text that the search matches: the name (weighted), namespace and description.
+    text: str

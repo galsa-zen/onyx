@@ -57,6 +57,7 @@ from onyx.tools.tool_implementations.code_mode.models import (
     SandboxLimits,
     SandboxResult,
     StoreCommit,
+    StoreSnapshot,
     code_mode_results,
 )
 from onyx.tools.tool_implementations.code_mode.prompt import (
@@ -68,7 +69,6 @@ from onyx.tools.tool_implementations.code_mode.sandbox import (
 )
 from onyx.tools.tool_implementations.code_mode.store import (
     ProgramStore,
-    StoreSnapshot,
     changed_writes,
     commit_limit_error,
     store_snapshot,

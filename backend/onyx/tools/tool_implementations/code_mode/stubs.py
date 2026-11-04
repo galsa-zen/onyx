@@ -5,11 +5,10 @@ import json
 import keyword
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from types import UnionType
 from typing import Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel, JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from onyx.llm.models import ToolResult
 from onyx.tools.interface import Tool
@@ -18,6 +17,12 @@ from onyx.tools.models import (
     CodeModeResultKind,
     CodeModeResultSpec,
     CustomToolCallSummary,
+)
+from onyx.tools.tool_implementations.code_mode.models import (
+    SchemaRefBudget,
+    SearchableFunction,
+    StubParameter,
+    StubResultType,
 )
 from onyx.tools.tool_implementations.code_mode.sandbox import (
     SANDBOX_NAMES,
@@ -33,7 +38,6 @@ from onyx.tools.tool_implementations.code_mode.tool_search import (
     TOOL_SEARCH_FUNCTION,
     TOOL_SEARCH_NAMES,
     TOOL_SEARCH_STUBS,
-    SearchableFunction,
     ToolIndex,
 )
 
@@ -75,9 +79,11 @@ _RESERVED_FUNCTION_NAMES: frozenset[str] = frozenset(
 _IDENTIFIER_INVALID = re.compile(r"\W")
 
 
-@dataclass(frozen=True)
-class ToolFunction:
-    """One tool as a Python function inside the sandbox."""
+class ToolFunction(BaseModel):
+    """One tool as a Python function inside the sandbox. It stays here, not in
+    models.py: `Tool` imports lead back to models.py."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     function_name: str
     tool: Tool
@@ -95,8 +101,9 @@ class ToolFunction:
         return self.tool.code_mode_exposure is CodeModeExposure.DEFERRED
 
 
-@dataclass(frozen=True)
-class ToolStubs:
+class ToolStubs(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     functions: Mapping[str, ToolFunction]
     # Complete stub module that the type checker reads: every function.
     text: str
@@ -177,11 +184,6 @@ def unique_identifiers[T](
     return dict(sorted(assigned.items()))
 
 
-@dataclass
-class _RefBudget:
-    total: int = 0
-
-
 def _resolve_ref(ref: str, root: Mapping[str, JsonValue]) -> JsonValue | None:
     if not ref.startswith("#/"):
         return None
@@ -254,12 +256,12 @@ def schema_annotation(
     schema: JsonValue,
     root: Mapping[str, JsonValue],
     *,
-    budget: _RefBudget | None = None,
+    budget: SchemaRefBudget | None = None,
     ref_path: tuple[str, ...] = (),
     depth: int = 0,
 ) -> str:
     """Render a JSON Schema as a Python type annotation; unknown shapes become Any."""
-    budget = budget if budget is not None else _RefBudget()
+    budget = budget if budget is not None else SchemaRefBudget()
     if not isinstance(schema, dict) or depth > MAX_SCHEMA_DEPTH:
         return ANY
 
@@ -354,17 +356,9 @@ def _object_keys_summary(schema: JsonValue) -> str:
     return f" Keys: {', '.join(keys)}."
 
 
-@dataclass(frozen=True)
-class _Parameter:
-    python_name: str
-    annotation: str
-    required: bool
-    description: str
-
-
 def _parameters(
     parameters: Mapping[str, JsonValue], *, typed: bool
-) -> tuple[list[_Parameter], dict[str, str]]:
+) -> tuple[list[StubParameter], dict[str, str]]:
     properties = parameters.get("properties")
     if not isinstance(properties, dict):
         return [], {}
@@ -376,8 +370,8 @@ def _parameters(
         else set()
     )
     names = unique_identifiers(properties, str, argument_name)
-    budget = _RefBudget()
-    result: list[_Parameter] = []
+    budget = SchemaRefBudget()
+    result: list[StubParameter] = []
     for python_name, original in names.items():
         prop = properties[original]
         annotation = (
@@ -391,7 +385,7 @@ def _parameters(
         if python_name != original:
             description = f"(tool argument `{original}`) {description}".strip()
         result.append(
-            _Parameter(
+            StubParameter(
                 python_name=python_name,
                 annotation=annotation,
                 required=original in required,
@@ -406,7 +400,7 @@ def _parameters(
 def _render_function(
     function_name: str,
     description: str,
-    parameters: Sequence[_Parameter],
+    parameters: Sequence[StubParameter],
     result_annotation: str,
     *,
     tool_name: str,
@@ -495,14 +489,8 @@ def model_declarations(model: type[BaseModel]) -> list[str]:
     return [rendered[name] for name in sorted(rendered)]
 
 
-@dataclass(frozen=True)
-class _ResultType:
-    annotation: str
-    declarations: tuple[str, ...]
-
-
-def _model_result_type(spec: CodeModeResultSpec) -> _ResultType:
-    return _ResultType(
+def _model_result_type(spec: CodeModeResultSpec) -> StubResultType:
+    return StubResultType(
         annotation=spec.type_annotation,
         declarations=(
             *([spec.declaration] if spec.declaration is not None else []),
@@ -525,7 +513,7 @@ def _type_name(function_name: str, taken: set[str]) -> str:
 
 def _schema_result_type(
     function_name: str, schema: dict[str, JsonValue], taken: set[str]
-) -> _ResultType:
+) -> StubResultType:
     """The result type that a JSON Schema describes. A top-level object is a
     TypedDict; its nested objects stay `dict[str, Any]`."""
     properties = schema.get("properties")
@@ -535,24 +523,27 @@ def _schema_result_type(
         or not properties
         or any(not name.isidentifier() or name in _SYNTAX_NAMES for name in properties)
     ):
-        return _ResultType(schema_annotation(schema, schema), ())
+        return StubResultType(
+            annotation=schema_annotation(schema, schema), declarations=()
+        )
     required_field = schema.get("required")
     required = set(required_field) if isinstance(required_field, list) else set()
     type_name = _type_name(function_name, taken)
-    budget = _RefBudget()
+    budget = SchemaRefBudget()
     fields = []
     for name, prop in properties.items():
         annotation = schema_annotation(prop, schema, budget=budget)
         fields.append(
             f"    {name}: {annotation if name in required else f'NotRequired[{annotation}]'}"
         )
-    return _ResultType(
-        type_name, ("\n".join([f"class {type_name}(TypedDict):", *fields]),)
+    return StubResultType(
+        annotation=type_name,
+        declarations=("\n".join([f"class {type_name}(TypedDict):", *fields]),),
     )
 
 
 def tool_function(
-    function_name: str, tool: Tool, result_type: _ResultType
+    function_name: str, tool: Tool, result_type: StubResultType
 ) -> ToolFunction:
     """Render one tool's stub; fall back to Any types when it exceeds the budget."""
     definition = tool.tool_definition()
@@ -562,7 +553,7 @@ def tool_function(
     spec = tool.code_mode_result
     stub = ""
     names: dict[str, str] = {}
-    parameters: list[_Parameter] = []
+    parameters: list[StubParameter] = []
     for typed, open_signature in ((True, False), (False, False), (False, True)):
         parameters, names = _parameters(definition.parameters, typed=typed)
         stub = _render_function(

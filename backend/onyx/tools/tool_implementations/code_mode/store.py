@@ -12,7 +12,6 @@ model.
 
 import math
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
 
 from pydantic import JsonValue
 from pydantic_monty import MontyClassProxy
@@ -20,6 +19,7 @@ from pydantic_monty import MontyClassProxy
 from onyx.llm.models import Message
 from onyx.tools.tool_implementations.code_mode.models import (
     StoreCommit,
+    StoreSnapshot,
     code_mode_results,
     entry_bytes,
     json_text,
@@ -98,17 +98,6 @@ def _commits(messages: Iterable[Message]) -> list[StoreCommit]:
         for window in details.windows()
         if window.commit is not None
     ]
-
-
-@dataclass(frozen=True)
-class StoreSnapshot:
-    """The store after a set of commits."""
-
-    values: Mapping[str, JsonValue]
-    # Bytes of the commits saved in the conversation branch so far.
-    committed_bytes: int = 0
-    # The highest commit ordinal so far; 0 before the first commit.
-    last_ordinal: int = 0
 
 
 def store_snapshot(

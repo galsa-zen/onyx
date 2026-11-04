@@ -5,7 +5,8 @@ import math
 import re
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+
+from onyx.tools.tool_implementations.code_mode.models import SearchableFunction
 
 TOOL_SEARCH_FUNCTION = "tool_search"
 TOOL_MATCH_TYPE = "ToolMatch"
@@ -38,16 +39,6 @@ def _tokens(text: str) -> list[str]:
     # Splits snake_case, kebab-case and camelCase names into words.
     spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
     return _TOKEN.findall(spaced.lower())
-
-
-@dataclass(frozen=True)
-class SearchableFunction:
-    name: str
-    description: str
-    # The function's stub with the declarations of its result types.
-    stub: str
-    # Text that the search matches: the name (weighted), namespace and description.
-    text: str
 
 
 class ToolIndex:

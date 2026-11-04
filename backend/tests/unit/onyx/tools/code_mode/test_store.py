@@ -7,11 +7,11 @@ from onyx.tools.tool_implementations.code_mode.models import (
     CodeModeExecutionResult,
     CodeModeStatus,
     StoreCommit,
+    StoreSnapshot,
 )
 from onyx.tools.tool_implementations.code_mode.store import (
     MAX_COMMITTED_BYTES,
     ProgramStore,
-    StoreSnapshot,
     changed_writes,
     json_value,
     store_snapshot,
