@@ -35,6 +35,7 @@ function createStep(
       } as Packet,
     ],
     nestedCalls: [],
+    codeMode: null,
   };
 }
 
@@ -69,6 +70,7 @@ function createDisplayGroup(turnIndex: number): GroupedPacket {
       } as Packet,
     ],
     nestedCalls: [],
+    codeMode: null,
   };
 }
 

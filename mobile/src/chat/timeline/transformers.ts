@@ -1,13 +1,7 @@
 // GroupedPacket → step → turn-group transforms + parallel detection. Port of web's transformers.
 
 import { GroupedPacket } from "@/chat/messageProcessor";
-import { PacketType } from "@/chat/streamingModels";
-import {
-  isCodeModePackets,
-  isGroupEndPacket,
-  isNestedPacket,
-  NestedCall,
-} from "@/chat/timeline/packetHelpers";
+import { CodeModeProgram, NestedCall } from "@/chat/timeline/packetHelpers";
 
 export interface TransformedStep {
   key: string;
@@ -16,6 +10,8 @@ export interface TransformedStep {
   packets: GroupedPacket["packets"];
   // Tool calls nested under the step, ordered by sub_turn_index
   nestedCalls: NestedCall[];
+  // The program of a code mode step; null for other steps
+  codeMode: CodeModeProgram | null;
 }
 
 export interface TurnGroup {
@@ -31,6 +27,7 @@ export function transformPacketGroup(group: GroupedPacket): TransformedStep {
     tabIndex: group.tab_index,
     packets: group.packets,
     nestedCalls: group.nestedCalls,
+    codeMode: group.codeMode,
   };
 }
 
@@ -69,31 +66,6 @@ export function groupStepsByTurn(steps: TransformedStep[]): TurnGroup[] {
   return result;
 }
 
-/** The cell that a code mode step observes, once the stream names it. */
-function codeModeCellId(step: TransformedStep): number | null {
-  for (const packet of step.packets) {
-    if (isNestedPacket(packet)) continue;
-    const obj = packet.obj;
-    if (
-      (obj.type === PacketType.CODE_MODE_START ||
-        obj.type === PacketType.CODE_MODE_DELTA) &&
-      obj.cell_id != null
-    ) {
-      return obj.cell_id;
-    }
-  }
-  return null;
-}
-
-/** Whether the program of a code mode step has started running; before that the model is still
- * writing it. */
-function programStarted(step: TransformedStep): boolean {
-  return step.packets.some(
-    (packet) =>
-      !isNestedPacket(packet) && packet.obj.type === PacketType.CODE_MODE_START,
-  );
-}
-
 export interface CodeModeTimeline {
   steps: TransformedStep[];
   /** A program is running between tool calls: it has started, has not returned, and none of its
@@ -120,6 +92,7 @@ function callStep(
     tabIndex: 0,
     packets: call.packets,
     nestedCalls: [],
+    codeMode: null,
   };
   callSteps.set(call, step);
   return step;
@@ -128,18 +101,20 @@ function callStep(
 /**
  * Shows code mode as the tool calls it makes. Each nested call of a program becomes its own
  * step, as a direct call would; the program itself has no step. A cell reports a call in every
- * observation until the call ends, so the latest report replaces earlier ones in place. Steps get
- * sequential turn indices in stream order; direct steps of one turn keep a shared index.
+ * observation until the call ends, so a later report replaces an earlier one in place. A report of
+ * a running call can hold only its start, so it replaces only a report with no more packets; a
+ * complete report always replaces. Steps get sequential turn indices in stream order; direct steps
+ * of one turn keep a shared index.
  */
 export function expandCodeModeSteps(
   steps: TransformedStep[],
 ): CodeModeTimeline {
   const out: TransformedStep[] = [];
-  // Where each call's step sits in `out`, the turn index it got first, its cell, and whether its
-  // latest report has ended.
+  // Where each call's step sits in `out`, the turn index it got first, its cell, and the report
+  // it shows.
   const slotByKey = new Map<
     string,
-    { index: number; turnIndex: number; cellKey: string; complete: boolean }
+    { index: number; turnIndex: number; cellKey: string; call: NestedCall }
   >();
   const directTurns = new Map<number, number>();
   // The key of each cell's first step; the keys of its calls derive from it.
@@ -149,7 +124,8 @@ export function expandCodeModeSteps(
   let nextTurn = 0;
 
   for (const step of steps) {
-    if (!isCodeModePackets(step.packets)) {
+    const program = step.codeMode;
+    if (program === null) {
       let turn = directTurns.get(step.turnIndex);
       if (turn === undefined) {
         turn = nextTurn++;
@@ -159,11 +135,11 @@ export function expandCodeModeSteps(
       continue;
     }
 
-    const cellId = codeModeCellId(step);
+    const cellId = program.cellId;
     const cellKey =
       (cellId === null ? undefined : cellKeys.get(cellId)) ?? step.key;
     if (cellId !== null) cellKeys.set(cellId, cellKey);
-    if (programStarted(step) && !step.packets.some(isGroupEndPacket)) {
+    if (program.started && !program.ended) {
       runningCells.add(cellKey);
     } else {
       runningCells.delete(cellKey);
@@ -178,11 +154,14 @@ export function expandCodeModeSteps(
           index: out.length,
           turnIndex,
           cellKey,
-          complete: call.complete,
+          call,
         });
         out.push(callStep(call, key, turnIndex));
-      } else {
-        slot.complete = call.complete;
+      } else if (
+        call.complete ||
+        call.packets.length >= slot.call.packets.length
+      ) {
+        slot.call = call;
         out[slot.index] = callStep(call, key, slot.turnIndex);
       }
     }
@@ -190,7 +169,7 @@ export function expandCodeModeSteps(
 
   const slots = Array.from(slotByKey.values());
   const codeModeWorking = Array.from(runningCells).some((cellKey) =>
-    slots.every((slot) => slot.cellKey !== cellKey || slot.complete),
+    slots.every((slot) => slot.cellKey !== cellKey || slot.call.complete),
   );
   return { steps: out, codeModeWorking };
 }

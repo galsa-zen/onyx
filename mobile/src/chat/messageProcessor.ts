@@ -28,11 +28,13 @@ import {
 } from "@/chat/timeline/packetUtils";
 import {
   asStandalonePacket,
+  CodeModeProgram,
   isCodeModePacket,
   isGroupEndPacket,
   isNestedPacket,
   NestedCall,
   nestedCallSnapshot,
+  nextCodeModeProgram,
 } from "@/chat/timeline/packetHelpers";
 import { parseToolKey } from "@/chat/timeline/toolDisplay";
 
@@ -53,6 +55,8 @@ export interface ProcessedMessageState {
   nestedCallSnapshots: Map<string, NestedCall[]>;
   seenGroupKeys: Set<string>;
   groupKeysWithSectionEnd: Set<string>;
+  // The program of each code mode group, updated once per packet
+  codeModePrograms: Map<string, CodeModeProgram>;
   toolGroupKeys: Set<string>;
   displayGroupKeys: Set<string>;
 
@@ -75,6 +79,8 @@ export interface GroupedPacket {
   packets: Packet[];
   // The tool calls nested under this group, ordered by sub_turn_index.
   nestedCalls: NestedCall[];
+  // The program of a code mode group; null for other groups.
+  codeMode: CodeModeProgram | null;
 }
 
 export function createInitialState(nodeId: number): ProcessedMessageState {
@@ -90,6 +96,7 @@ export function createInitialState(nodeId: number): ProcessedMessageState {
     nestedCallSnapshots: new Map(),
     seenGroupKeys: new Set(),
     groupKeysWithSectionEnd: new Set(),
+    codeModePrograms: new Map(),
     toolGroupKeys: new Set(),
     displayGroupKeys: new Set(),
     generatedImages: [],
@@ -343,6 +350,15 @@ function processPacket(state: ProcessedMessageState, packet: Packet): void {
 
   addPacketToGroup(state, packet, groupKey);
 
+  if (isCodeModePacket(packet)) {
+    const program = state.codeModePrograms.get(groupKey) ?? {
+      cellId: null,
+      started: false,
+      ended: false,
+    };
+    state.codeModePrograms.set(groupKey, nextCodeModeProgram(program, packet));
+  }
+
   // Debug and control packets can precede the first rendered packet.
   let opensToolGroup = false;
   if (
@@ -414,6 +430,16 @@ function nestedCalls(state: ProcessedMessageState, key: string): NestedCall[] {
   return calls;
 }
 
+function codeModeProgram(
+  state: ProcessedMessageState,
+  key: string,
+): CodeModeProgram | null {
+  const program = state.codeModePrograms.get(key);
+  if (!program) return null;
+  const ended = state.groupKeysWithSectionEnd.has(key);
+  return program.ended === ended ? program : { ...program, ended };
+}
+
 function buildGroupsFromKeys(
   state: ProcessedMessageState,
   keys: Set<string>,
@@ -428,6 +454,7 @@ function buildGroupsFromKeys(
             tab_index,
             packets: [...packets],
             nestedCalls: nestedCalls(state, key),
+            codeMode: codeModeProgram(state, key),
           }
         : null;
     })

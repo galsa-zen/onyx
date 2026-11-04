@@ -122,6 +122,24 @@ test("a later observation replaces a running call in place", () => {
   );
 });
 
+test("a shorter report of a running call keeps the fuller one", () => {
+  const queries: Packet = {
+    placement: at(0, 0, 0),
+    obj: { type: PacketType.SEARCH_TOOL_QUERIES_DELTA, queries: ["onyx"] },
+  } as Packet;
+  const turns = expand([
+    ...observation(0, 1, [...search(0, 0, false), queries], "running"),
+    ...observation(1, 1, search(1, 0, false), "running"),
+  ]);
+
+  const call = turns[0]!.steps[0]!;
+  expect(call.groupKey).toBe("0-0");
+  expect(call.packets.map((p) => p.obj.type)).toEqual([
+    PacketType.SEARCH_TOOL_START,
+    PacketType.SEARCH_TOOL_QUERIES_DELTA,
+  ]);
+});
+
 test("a program without calls has no step", () => {
   const first = observation(0, 1, [], "running");
   expect(expand([...first, ...observation(1, 1, [])])).toEqual([]);

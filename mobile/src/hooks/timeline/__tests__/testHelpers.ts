@@ -29,6 +29,7 @@ export function makeStep(
     tabIndex,
     packets,
     nestedCalls: [],
+    codeMode: null,
   };
 }
 

@@ -17,6 +17,7 @@ const group = (turn_index: number, tab_index: number): GroupedPacket => ({
   tab_index,
   packets: [],
   nestedCalls: [],
+  codeMode: null,
 });
 
 describe("transformers", () => {
@@ -104,6 +105,23 @@ describe("transformers", () => {
       );
       expect(steps.map((s) => s.key)).toEqual(["0-0-0"]);
       expect(steps[0]!.packets.at(-1)!.obj.type).toBe("section_end");
+    });
+
+    it("keeps the fuller report of a running call over a shorter later one", () => {
+      const queries = {
+        placement: at(0, 0),
+        obj: { type: "search_tool_queries_delta", queries: ["onyx"] },
+      } as Packet;
+      const { steps } = expandCodeModeSteps(
+        stepsOf([
+          ...observation(0, [...search(0, false), queries], true),
+          ...observation(1, search(1, false), true),
+        ]),
+      );
+      expect(steps[0]!.packets.map((p) => p.obj.type)).toEqual([
+        "search_tool_start",
+        "search_tool_queries_delta",
+      ]);
     });
 
     it("gives a program without calls no step, and works until it returns", () => {

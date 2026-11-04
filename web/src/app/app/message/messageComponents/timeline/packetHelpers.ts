@@ -82,6 +82,35 @@ export function nestedCallSnapshot(
   return changed ? calls : previous;
 }
 
+/** What the parent-level packets of a code mode group say about its program. */
+export interface CodeModeProgram {
+  /** The cell the program runs in, once a start or output packet names it. */
+  cellId: number | null;
+  /** The program has started running; before that the model is still writing it. */
+  started: boolean;
+  /** The group has ended. */
+  ended: boolean;
+}
+
+/** The program after one more packet of its group. Call it only for code mode packets. */
+export function nextCodeModeProgram(
+  program: CodeModeProgram,
+  packet: Packet
+): CodeModeProgram {
+  const obj = packet.obj;
+  if (
+    obj.type !== PacketType.CODE_MODE_START &&
+    obj.type !== PacketType.CODE_MODE_DELTA
+  ) {
+    return program;
+  }
+  return {
+    ...program,
+    cellId: program.cellId ?? obj.cell_id ?? null,
+    started: program.started || obj.type === PacketType.CODE_MODE_START,
+  };
+}
+
 // Check if packets belong to a research agent (handles its own Done indicator)
 export const isResearchAgentPackets = (packets: Packet[]): boolean =>
   someParentPacket(
@@ -109,10 +138,6 @@ export const isCodeModePacket = (packet: Packet): boolean =>
     packet.obj.type === PacketType.CODE_MODE_DELTA ||
     (packet.obj.type === PacketType.TOOL_CALL_ARGUMENT_DELTA &&
       packet.obj.tool_type === CODE_MODE_TOOL_TYPE));
-
-// Check if packets belong to a code mode step
-export const isCodeModePackets = (packets: Packet[]): boolean =>
-  packets.some(isCodeModePacket);
 
 // Check if packets belong to a search tool
 export const isSearchToolPackets = (packets: Packet[]): boolean =>
