@@ -231,17 +231,19 @@ def format_content(
 
 
 def closing_line(cell_id: int, closing: CellClosing) -> str:
-    """The line added to a cell's last observation when the response ended."""
+    """The line added to a cell's last observation when the response ended or
+    the run paused."""
     if closing.reason == "interrupted":
         return (
             f"Cell {cell_id} was interrupted when the server stopped. Calls after "
             "this output are not known; they may have run."
         )
+    event = "the run paused" if closing.reason == "suspended" else "the response ended"
     opening = (
         f"Cell {cell_id} {_STATUS_TEXT[closing.status]} after this output, before "
-        "the response ended."
+        f"{event}."
         if closing.status in _ENDED
-        else f"Cell {cell_id} stopped when the response ended."
+        else f"Cell {cell_id} stopped when {event}."
     )
     if not closing.calls:
         return f"{opening} It made no calls after this output."

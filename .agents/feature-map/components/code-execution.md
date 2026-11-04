@@ -161,6 +161,9 @@ execute_code / wait_code (code mode; a cell per program, a store per chat)
                                         result of each observation Stop interrupted, and one
                                         with a CellClosing for each cell whose last saved
                                         observation is running
+  chat/agent.py:_suspended_cells (Agent.on_suspend) -> CodeCells.suspend
+                                        the same when the run suspends, with
+                                        reason="suspended"; later calls can start cells
   chat/code_mode_renderer.py:CodeModeRenderer one child ToolRenderer per call, sub_turn_index = n;
                                         amend(result) renders a closing record
 ```
@@ -463,7 +466,11 @@ health calls are not retried.
     up to `STOP_GRACE_SECONDS` from the first stop request, and returns a
     `ToolResultAmendment` for each observation that Stop interrupted and for
     each cell whose last saved observation is `running`. The amendment adds a `CellClosing` (`reason="response_ended"`)
-    with the calls, output and store commit after that observation. For a
+    with the calls, output and store commit after that observation. When the
+    run suspends (for example on `ChildRunWait`), `Agent.on_suspend`
+    (`chat/agent.py:_suspended_cells`) calls `CodeCells.suspend`, which does
+    the same with `reason="suspended"` before the run captures its state, so no
+    cell runs while nothing owns the run. For a
     restored run, `tools/tool_implementations/code_mode/cells.py:_interrupted_amendments` closes such observations
     with `reason="interrupted"` and status `cancelled`, since what the cell did
     after them is not known. The run applies the amendments before it saves

@@ -1,7 +1,10 @@
 """Code mode programs in the agent runtime: the store, compaction and restore."""
 
+import threading
+
 import pytest
 
+from onyx.agents.agent_coordination import AgentCoordinator
 from onyx.agents.events import AgentEvent, ToolEndEvent
 from onyx.agents.models import (
     AgentState,
@@ -13,6 +16,8 @@ from onyx.agents.models import (
 )
 from onyx.agents.runtime import Agent
 from onyx.agents.tools import (
+    AgentTool,
+    ChildRunWait,
     HumanToolAnswer,
     InputDecision,
     InputMode,
@@ -28,6 +33,7 @@ from onyx.llm.models import (
     Message,
     TextContent,
     ToolCall,
+    ToolDefinition,
     ToolResult,
     ToolResultMessage,
     UserMessage,
@@ -242,3 +248,75 @@ def test_store_keeps_values_written_before_the_compaction_boundary() -> None:
     assert not any(
         isinstance(message, ToolResultMessage) for message in requests[0].messages
     )
+
+
+def test_a_running_cell_stops_with_a_closing_record_when_the_run_suspends() -> None:
+    release_child = threading.Event()
+
+    def child_generate(
+        _request: GenerationRequest, signal: CancellationSignal
+    ) -> AssistantMessage:
+        while not release_child.wait(0.01):
+            signal.check()
+        return AssistantMessage(content=[TextContent(text="child done")])
+
+    def delegate(invocation: ToolInvocation) -> ChildRunWait:
+        child = Agent(
+            FakeModelClient(child_generate),
+            generation_context=GenerationContext(flow=LLMFlow.CHAT_RESPONSE),
+        )
+        spawned = invocation.agents.spawn_agent(
+            child, name="child", description="", messages=[], max_steps=1
+        )
+        return ChildRunWait(run_ids=[spawned.run_id])
+
+    def generate(
+        request: GenerationRequest, _signal: CancellationSignal
+    ) -> AssistantMessage:
+        if any(isinstance(message, ToolResultMessage) for message in request.messages):
+            return AssistantMessage(content=[TextContent(text="answer")])
+        return AssistantMessage(
+            content=[
+                ToolCall(
+                    id="loop",
+                    name=CodeModeTool.NAME,
+                    arguments={"code": "yield_control()\nwhile True:\n    pass\n"},
+                ),
+                ToolCall(id="delegate", name="delegate", arguments={}),
+            ]
+        )
+
+    cells = CodeCells()
+    tool = CodeModeTool([], cells=cells, limits=LIMITS)
+    parent = Agent(
+        FakeModelClient(generate),
+        generation_context=GenerationContext(flow=LLMFlow.CHAT_RESPONSE),
+        tools=[
+            tool.bind(ToolContext),
+            AgentTool(
+                definition=ToolDefinition(
+                    name="delegate", description="", parameters={}
+                ),
+                execute=delegate,
+                result_from_children=lambda *_: ToolResult(content="delegated"),
+            ),
+        ],
+        on_finish=cells.finish,
+        on_suspend=cells.suspend,
+    )
+    coordinator = AgentCoordinator()
+    run = parent.start(max_steps=2, coordinator=coordinator)
+    try:
+        assert run.wait_until_settled(timeout=10).status == RunStatus.SUSPENDED
+        assert run.wait_for_idle(5)
+        # The cell stopped instead of running while nothing owns the run.
+        assert cells._cells[1]._end is not None
+        details = _saved_result(run.capture().run_state, "loop").details
+        assert isinstance(details, CodeModeExecutionResult)
+        assert details.closing is not None
+        assert details.closing.reason == "suspended"
+        assert details.closing.status == "terminated"
+    finally:
+        release_child.set()
+    assert run.result().output.text == "answer"
+    assert coordinator.close(timeout=3)

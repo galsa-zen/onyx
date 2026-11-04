@@ -41,6 +41,7 @@ from onyx.tools.tool_implementations.code_mode.models import (
     CODE_MODE_CALL_DETAIL_TYPES,
     STOPPED_BEFORE_END,
     CellClosing,
+    CellClosingReason,
     CellEvent,
     ClosedStatus,
     CodeModeCall,
@@ -645,8 +646,8 @@ class CodeCell:
                 if record.thread_alive
             ]
 
-    def close(self) -> ToolResultAmendment | None:
-        """The final record of the cell when the response ends.
+    def close(self, reason: CellClosingReason) -> ToolResultAmendment | None:
+        """The final record of the cell when the response ends or the run pauses.
 
         An observation that Stop interrupted gets its result: the cell's end, or
         how it stopped. Otherwise the last saved observation, when it reports the
@@ -660,7 +661,7 @@ class CodeCell:
             taken = (
                 self._take(observer, final=True)
                 if observer is not None
-                else self._closing()
+                else self._closing(reason)
             )
         if taken is None:
             return None
@@ -671,7 +672,9 @@ class CodeCell:
         call_id, result, closing = taken
         return _closing_amendment(call_id, result, closing)
 
-    def _closing(self) -> tuple[str, ToolResult, CellClosing] | None:
+    def _closing(
+        self, reason: CellClosingReason
+    ) -> tuple[str, ToolResult, CellClosing] | None:
         """Close the cell: the closing record for its last saved observation, when
         that reports it running. The caller holds the lock."""
         # An observation being formatted may still report the cell running.
@@ -684,7 +687,7 @@ class CodeCell:
             call_id,
             result,
             CellClosing(
-                reason="response_ended",
+                reason=reason,
                 status=self._final_status(),
                 # The model reads only the closing line, not this output.
                 stdout=self._stdout.cut(LIVE_OUTPUT_CHARS),
@@ -1209,8 +1212,8 @@ class CodeCells:
         if cell is None:
             if cell_id in _recorded_cell_ids(invocation.recorded_results):
                 raise _rejected(
-                    f"Cell {cell_id} stopped when its response ended. Start a new "
-                    "execute_code call."
+                    f"Cell {cell_id} stopped when its response ended or its run "
+                    "paused. Start a new execute_code call."
                 )
             raise _rejected(f"Cell {cell_id} does not exist.")
         return cell.observe(
@@ -1233,20 +1236,34 @@ class CodeCells:
         """
         with self._lock:
             self._finished = True
+        return self._close_all(results, "response_ended")
+
+    def suspend(
+        self, results: Sequence[ToolResultMessage]
+    ) -> list[ToolResultAmendment]:
+        """Stop every open cell when the run pauses, and return final records as
+        `finish` does. Later calls can start new cells."""
+        return self._close_all(results, "suspended")
+
+    def _close_all(
+        self, results: Sequence[ToolResultMessage], reason: CellClosingReason
+    ) -> list[ToolResultAmendment]:
+        with self._lock:
             cells = list(self._cells.values())
         for cell in cells:
             cell.stop("terminated")
         for cell in cells:
             cell.wait_ended()
         amendments = [
-            amendment for cell in cells if (amendment := cell.close()) is not None
+            amendment for cell in cells if (amendment := cell.close(reason)) is not None
         ]
         for cell in cells:
             running = cell.running_calls()
             if running:
                 logger.warning(
-                    "Code mode cell %s: calls still running at response end: %s",
+                    "Code mode cell %s: calls still running after it closed (%s): %s",
                     cell.id,
+                    reason,
                     ", ".join(running),
                 )
         return [

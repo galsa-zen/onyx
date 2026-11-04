@@ -150,11 +150,16 @@ class CellWindow(BaseModel):
     tool_call_count: int = 0
 
 
-class CellClosing(CellWindow):
-    """What a cell did after its last observation, recorded when the response ended."""
+# `suspended`: the run paused, for example to wait for a subagent.
+# `interrupted`: the server stopped, so what the cell did after is not known.
+CellClosingReason = Literal["response_ended", "suspended", "interrupted"]
 
-    # `interrupted`: the server stopped, so what the cell did after is not known.
-    reason: Literal["response_ended", "interrupted"]
+
+class CellClosing(CellWindow):
+    """What a cell did after its last observation, recorded when the response
+    ended or the run paused."""
+
+    reason: CellClosingReason
     status: ClosedStatus
 
 

@@ -201,7 +201,8 @@ observation gets no "did not complete" note: a later observation or the
 closing record reports the cell's end. When the response ended after a
 cell's last observation, the text adds
 `tools/tool_implementations/code_mode/prompt.py:closing_line` ("Cell N stopped
-when the response ended", or how it ended, with the calls after that output),
+when the response ended" or "when the run paused", or how it ended, with the
+calls after that output),
 so the next turn sees the side effects. Legacy rows get the same placeholder from
 `chat/chat_utils.py:_build_tool_call_response_history_message`, which keeps
 image output too. The incognito store

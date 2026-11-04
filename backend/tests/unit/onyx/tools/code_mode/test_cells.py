@@ -297,7 +297,8 @@ def test_unknown_and_earlier_cell_ids() -> None:
     stopped = later.wait(1)
     assert stopped.is_error
     assert stopped.content == (
-        "Cell 1 stopped when its response ended. Start a new execute_code call."
+        "Cell 1 stopped when its response ended or its run paused. Start a new "
+        "execute_code call."
     )
     missing = later.wait(9)
     assert missing.content == "Cell 9 does not exist."
@@ -554,7 +555,8 @@ def test_restored_running_observation_is_amended_as_interrupted() -> None:
     ]
     response = Response(history=history)
     assert response.wait(3).content == (
-        "Cell 3 stopped when its response ended. Start a new execute_code call."
+        "Cell 3 stopped when its response ended or its run paused. Start a new "
+        "execute_code call."
     )
     amended = response.finish()["old"]
     closing = _details(amended).closing

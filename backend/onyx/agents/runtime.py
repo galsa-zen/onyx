@@ -205,6 +205,10 @@ def _capture_unsettled_child(state: RunState) -> RunState:
     return snapshot
 
 
+# Called with the run's recorded tool results; returns final results of its calls.
+ReleaseHook = Callable[[list[ToolResultMessage]], list[ToolResultAmendment]]
+
+
 class RestorableFeature(Protocol):
     """Capture and restore feature-owned state at safe execution boundaries."""
 
@@ -237,8 +241,8 @@ class Agent:
         | None = None,
         after_tool_call: Callable[[ToolCallContext, ToolResult], ToolResult]
         | None = None,
-        on_finish: Callable[[list[ToolResultMessage]], list[ToolResultAmendment]]
-        | None = None,
+        on_finish: ReleaseHook | None = None,
+        on_suspend: ReleaseHook | None = None,
         agent_id: str | None = None,
         previous_run_id: str | None = None,
         restoration: "RestorableFeature | None" = None,
@@ -258,6 +262,8 @@ class Agent:
         self.before_tool_call = before_tool_call
         self.after_tool_call = after_tool_call
         self.on_finish = on_finish
+        # Called when the run suspends, before its state is captured.
+        self.on_suspend = on_suspend
         self._restoration = restoration
         self._state = (state or AgentState()).snapshot()
         for message in self._state.messages:
@@ -493,9 +499,8 @@ class Run:
         self.after_tool_call: (
             Callable[[ToolCallContext, ToolResult], ToolResult] | None
         ) = None
-        self._on_finish: (
-            Callable[[list[ToolResultMessage]], list[ToolResultAmendment]] | None
-        ) = None
+        self._on_finish: ReleaseHook | None = None
+        self._on_suspend: ReleaseHook | None = None
         self._restoration: RestorableFeature | None = None
         self._step_tools: list[AgentTool] | None = None
         self.work = ExecutionWork()
@@ -907,6 +912,7 @@ class Run:
             self.before_tool_call = agent.before_tool_call
             self.after_tool_call = agent.after_tool_call
             self._on_finish = agent.on_finish
+            self._on_suspend = agent.on_suspend
             self._restoration = agent._restoration
             self._thread_context = copy_context()
             if coordinator is not None:
@@ -1075,6 +1081,10 @@ class Run:
             completion.add_done_callback(lambda _future: self._wake_execution())
 
     def _suspend(self) -> None:
+        amendments = self._release_amendments(self._on_suspend)
+        if amendments:
+            with self.execution_lock:
+                self._apply_amendments(amendments)
         if self._restoration is not None:
             self.cancellation_signal.check()
             feature_state = _FEATURE_STATE.validate_python(
@@ -1121,7 +1131,7 @@ class Run:
 
     def _finish(self, outcome: RunOutcome, llm: LLM) -> None:
         self._cancellation_link.close()
-        amendments = self._finish_amendments()
+        amendments = self._release_amendments(self._on_finish)
         if self.coordination and outcome in (
             RunStatus.ERROR,
             RunStatus.CANCELLED,
@@ -1206,13 +1216,14 @@ class Run:
         finally:
             self._drain_workers()
 
-    def _finish_amendments(self) -> list[ToolResultAmendment]:
-        """Ask the finish hook for the final results of this run's calls.
+    def _release_amendments(
+        self, hook: ReleaseHook | None
+    ) -> list[ToolResultAmendment]:
+        """Ask a finish or suspend hook for the final results of this run's calls.
 
         The hook runs without the execution lock, since it can wait for tool work.
         """
-        on_finish = self._on_finish
-        if on_finish is None:
+        if hook is None:
             return []
         with self.execution_lock:
             # Not copied: the hook reads them and must not change them.
@@ -1222,9 +1233,9 @@ class Run:
                 if isinstance(message, ToolResultMessage)
             ]
         try:
-            return on_finish(results)
+            return hook(results)
         except Exception:
-            logger.exception("Run finish hook failed: %s", self.id)
+            logger.exception("Run release hook failed: %s", self.id)
             return []
 
     def _apply_amendments(self, amendments: Sequence[ToolResultAmendment]) -> None:
@@ -1273,6 +1284,7 @@ class Run:
         self.before_tool_call = None
         self.after_tool_call = None
         self._on_finish = None
+        self._on_suspend = None
         self._restoration = None
 
     def _drain_workers(self) -> None:

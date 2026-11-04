@@ -207,6 +207,7 @@ class ChatAgent(Agent, RestorableFeature):
             ),
             after_tool_call=self._finalize_tool,
             on_finish=None if self.code_cells is None else self._finished_cells,
+            on_suspend=None if self.code_cells is None else self._suspended_cells,
         )
 
     def capture_state(self) -> ChatFeatureState:
@@ -397,9 +398,23 @@ class ChatAgent(Agent, RestorableFeature):
         """Stop the response's open cells and save their final records."""
         if self.code_cells is None:
             return []
+        return self._staged_amendments(self.code_cells.finish(results))
+
+    def _suspended_cells(
+        self, results: list[ToolResultMessage]
+    ) -> list[ToolResultAmendment]:
+        """Stop the response's open cells when the run pauses, and save their final
+        records."""
+        if self.code_cells is None:
+            return []
+        return self._staged_amendments(self.code_cells.suspend(results))
+
+    def _staged_amendments(
+        self, amendments: list[ToolResultAmendment]
+    ) -> list[ToolResultAmendment]:
         return [
             amendment.model_copy(update={"result": self._staged(amendment.result)})
-            for amendment in self.code_cells.finish(results)
+            for amendment in amendments
         ]
 
     def _validate_answer(self, result: StepResult) -> None:
