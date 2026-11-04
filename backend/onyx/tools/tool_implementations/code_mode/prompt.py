@@ -14,6 +14,7 @@ from onyx.tools.tool_implementations.code_mode.models import (
 )
 from onyx.tools.tool_implementations.code_mode.sandbox import (
     IMPORTABLE_MODULES,
+    ExternalCall,
     SandboxLimits,
     SandboxResult,
 )
@@ -121,6 +122,19 @@ def calls_note(calls: Sequence[CodeModeCall]) -> str | None:
     )
 
 
+def _call_names(calls: Sequence[ExternalCall]) -> list[str]:
+    return [f"{call.function_name}[{call.index}]" for call in calls]
+
+
+def _unstarted_note(calls: Sequence[str]) -> str | None:
+    if not calls:
+        return None
+    names = ", ".join(calls)
+    if len(calls) == 1:
+        return f"1 tool call was never awaited and never started: {names}."
+    return f"{len(calls)} tool calls were never awaited and never started: {names}."
+
+
 def _unawaited_note(calls: Sequence[str]) -> str | None:
     if not calls:
         return None
@@ -208,11 +222,8 @@ def format_content(
         note
         for note in (
             None if completed or running else calls_note(details.calls),
-            None
-            if end is None
-            else _unawaited_note(
-                [f"{call.function_name}[{call.index}]" for call in end.unawaited_calls]
-            ),
+            None if end is None else _unawaited_note(_call_names(end.unawaited_calls)),
+            None if end is None else _unstarted_note(_call_names(end.unstarted_calls)),
             None if discarded is None else discarded.note,
             None if details.commit is None else store_summary(details.commit.writes),
             continues_note(details.cell_id) if running else None,

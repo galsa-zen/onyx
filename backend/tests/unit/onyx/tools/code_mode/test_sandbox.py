@@ -1020,6 +1020,24 @@ def test_a_call_that_outlives_its_program_keeps_its_thread_until_it_returns(
     until(lambda: threads.acquire(lambda: None))
 
 
+def test_queued_calls_that_never_started_are_not_reported_as_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    threads = sandbox._ToolCallThreads(1)
+    monkeypatch.setattr(sandbox, "_tool_call_threads", threads)
+    release = threading.Event()
+
+    def handler(_call: ExternalCall) -> object:
+        release.wait(5)
+        return "late"
+
+    result = run("a = slow(seconds=1)\nb = slow(seconds=2)\n'started'\n", handler)
+    release.set()
+    assert result.status == "completed", result
+    assert [call.index for call in result.unawaited_calls] == [0]
+    assert [call.index for call in result.unstarted_calls] == [1]
+
+
 def test_programs_waiting_for_threads_share_them_equally() -> None:
     threads = sandbox._ToolCallThreads(4)
 

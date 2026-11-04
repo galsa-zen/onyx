@@ -203,6 +203,8 @@ class SandboxResult:
     # Tool calls not finished when the program completed without awaiting them.
     # They are not waited for; the caller cancels them.
     unawaited_calls: tuple[ExternalCall, ...] = ()
+    # Tool calls the program never awaited that were still queued; they never run.
+    unstarted_calls: tuple[ExternalCall, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -788,11 +790,19 @@ class _Run:
         return results
 
     def unawaited_calls(self) -> tuple[ExternalCall, ...]:
-        """Tool calls the program made and never awaited that have not finished."""
+        """Tool calls the program started and never awaited that have not finished."""
         return tuple(
             pending.external
             for pending in self.calls.values()
-            if pending.future is None or not pending.future.done()
+            if pending.future is not None and not pending.future.done()
+        )
+
+    def unstarted_calls(self) -> tuple[ExternalCall, ...]:
+        """Tool calls the program never awaited that are still queued."""
+        return tuple(
+            pending.external
+            for pending in self.calls.values()
+            if pending.future is None
         )
 
     @property
@@ -1084,6 +1094,7 @@ def execute_program(
             commits_store=status == "completed"
             or (raised and run.abort_reason() is None),
             unawaited_calls=run.unawaited_calls() if status == "completed" else (),
+            unstarted_calls=run.unstarted_calls() if status == "completed" else (),
         )
 
     resource_limits = _resource_limits(limits)
