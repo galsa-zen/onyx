@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import pytest
+from prometheus_client import REGISTRY
 from pydantic import JsonValue
 from pydantic_monty import FunctionSnapshot, Monty
 
@@ -32,6 +33,19 @@ from onyx.tools.tool_implementations.code_mode.store import (
     StoreSnapshot,
 )
 from tests.unit.onyx.tools.code_mode.fakes import until
+
+
+def _count(name: str, labels: dict[str, str]) -> float:
+    return REGISTRY.get_sample_value(name, labels) or 0.0
+
+
+def _worker_losses(reason: str) -> float:
+    return _count("onyx_code_mode_sandbox_workers_lost_total", {"reason": reason})
+
+
+def _suspensions(outcome: str) -> float:
+    return _count("onyx_code_mode_suspensions_total", {"outcome": outcome})
+
 
 STUBS = f"""from typing import Any, TypedDict
 
@@ -428,6 +442,7 @@ COMPUTE_LIMITS = SandboxLimits(
 
 
 def test_stop_during_computation_kills_the_worker(two_workers: Monty) -> None:
+    killed = _worker_losses("killed")
     cancellation = CancellationSignal()
     threading.Timer(0.2, cancellation.cancel).start()
     started = time.monotonic()
@@ -438,6 +453,7 @@ def test_stop_during_computation_kills_the_worker(two_workers: Monty) -> None:
         pool=two_workers,
     )
     assert result.status == "cancelled", result
+    assert _worker_losses("killed") == killed + 1
     assert result.error == "The execution was cancelled."
     # Far less than the compute limit.
     assert time.monotonic() - started < 5
@@ -552,6 +568,8 @@ def test_a_dump_over_the_byte_budget_keeps_the_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sandbox, "_suspended_bytes", sandbox._SuspendedBytes(0))
+    over_budget = _suspensions("over_budget")
+    dumped = _suspensions("dumped")
     with Monty(
         min_processes=1, max_processes=1, checkout_timeout=sandbox.CHECKOUT_POLL_SECONDS
     ) as pool:
@@ -565,6 +583,8 @@ def test_a_dump_over_the_byte_budget_keeps_the_worker(
                 )
             )
     assert [result.stdout for result in results] == ["done 0\n", "done 1\n"]
+    assert _suspensions("over_budget") > over_budget
+    assert _suspensions("dumped") == dumped
 
 
 def test_a_dump_that_cannot_fit_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -660,10 +680,12 @@ def test_a_waiting_program_dumps_one_holder(
     monkeypatch.setattr(sandbox, "_worker_demand", demand)
     # The dump outlasts the waiter's checkout retries.
     dumps = _slow_counted_dumps(monkeypatch, 3 * sandbox.CHECKOUT_POLL_SECONDS)
+    dumped = _suspensions("dumped")
     with _holders(demand, two_workers, 2) as results:
         assert run("print(1)\n", pool=two_workers).stdout == "1\n"
     assert [result.stdout for result in results] == ["done\n", "done\n"]
     assert dumps == [1]
+    assert _suspensions("dumped") == dumped + 1
 
 
 def test_a_program_that_finds_every_worker_busy_claims_one_at_once(
