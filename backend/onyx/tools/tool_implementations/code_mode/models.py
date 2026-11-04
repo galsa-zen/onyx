@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable
 from functools import cached_property
 from typing import Annotated, Literal, Self, get_args
 
-from pydantic import BaseModel, Field, JsonValue, SerializeAsAny
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializeAsAny
 
 from onyx.context.search.models import SearchDocsResponse
 from onyx.llm.models import Message, ToolResultMessage
@@ -116,6 +116,24 @@ class StoreCommit(BaseModel):
     def size_bytes(self) -> int:
         """Bytes the commit adds to the chat's saved history; measured once."""
         return sum(entry_bytes(key, value) for key, value in self.writes.items())
+
+
+STOPPED_BEFORE_END = "the program was stopped before it ended"
+
+
+class DiscardedWrites(BaseModel):
+    """Keys of store() writes that did not commit, and why."""
+
+    model_config = ConfigDict(frozen=True)
+
+    keys: tuple[str, ...]
+    reason: str
+
+    @property
+    def note(self) -> str | None:
+        if not self.keys:
+            return None
+        return f"Store writes discarded because {self.reason}: {', '.join(self.keys)}."
 
 
 class CellWindow(BaseModel):

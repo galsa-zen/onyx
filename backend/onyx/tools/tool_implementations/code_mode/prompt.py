@@ -1,7 +1,6 @@
 """Text that the model reads for code mode: tool descriptions and each result."""
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 from onyx.agents.compaction import count_tokens, head_and_tail_tokens
 from onyx.llm.models import Message
@@ -10,6 +9,7 @@ from onyx.tools.tool_implementations.code_mode.models import (
     CodeModeCall,
     CodeModeExecutionResult,
     CodeModeStatus,
+    DiscardedWrites,
     code_mode_results,
 )
 from onyx.tools.tool_implementations.code_mode.sandbox import (
@@ -175,23 +175,6 @@ def token_budget(text: str, max_tokens: int, *, elided_chars: int = 0) -> str:
         f"Total output lines: {lines}\n\n"
         f"{head}…{count - max_tokens} tokens truncated…{tail}"
     )
-
-
-STOPPED_BEFORE_END = "the program was stopped before it ended"
-
-
-@dataclass(frozen=True)
-class DiscardedWrites:
-    """Keys of store() writes that did not commit, and why."""
-
-    keys: tuple[str, ...]
-    reason: str
-
-    @property
-    def note(self) -> str | None:
-        if not self.keys:
-            return None
-        return f"Store writes discarded because {self.reason}: {', '.join(self.keys)}."
 
 
 def format_content(

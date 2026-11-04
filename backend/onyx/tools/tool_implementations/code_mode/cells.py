@@ -39,6 +39,7 @@ from onyx.tools.models import (
 )
 from onyx.tools.tool_implementations.code_mode.models import (
     CODE_MODE_CALL_DETAIL_TYPES,
+    STOPPED_BEFORE_END,
     CellClosing,
     CellEvent,
     ClosedStatus,
@@ -50,12 +51,11 @@ from onyx.tools.tool_implementations.code_mode.models import (
     CodeModeExecutionResult,
     CodeModeStatus,
     CodeModeStdout,
+    DiscardedWrites,
     StoreCommit,
     code_mode_results,
 )
 from onyx.tools.tool_implementations.code_mode.prompt import (
-    STOPPED_BEFORE_END,
-    DiscardedWrites,
     closing_line,
     format_content,
 )
@@ -980,7 +980,9 @@ class CodeCell:
             self._discarded = (
                 None
                 if discard_reason is None
-                else DiscardedWrites(tuple(store.changed_writes), discard_reason)
+                else DiscardedWrites(
+                    keys=tuple(store.changed_writes), reason=discard_reason
+                )
             )
             for record in self._calls.values():
                 if record.ended_in is None:
