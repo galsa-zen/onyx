@@ -608,7 +608,16 @@ def _samples() -> dict[str, float]:
     }
 
 
+_IN_USE_GAUGES = (
+    "onyx_code_mode_cells_running",
+    "onyx_code_mode_sandbox_workers_busy",
+    "onyx_code_mode_tool_call_threads_in_use",
+)
+
+
 def test_capacity_metrics_follow_one_program() -> None:
+    # Cells from earlier tests may still be finishing.
+    until(lambda: all(_samples()[name] == 0 for name in _IN_USE_GAUGES))
     before = _samples()
 
     def delta(name: str) -> float:
